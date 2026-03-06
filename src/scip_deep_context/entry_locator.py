@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Dict
 
 from scip_deep_context.models import NoReferenceFoundError, SymbolInfo, SymbolRole
+from scip_deep_context.symbol_filter import is_local_symbol
 
 
 def locate_entry_symbol(
@@ -21,7 +22,15 @@ def locate_entry_symbol(
 
     ref_candidates = []
     def_candidates = []
+    had_local_candidates = False
     for info in symbol_table.values():
+        if is_local_symbol(info.symbol):
+            if not had_local_candidates:
+                for occ in (*info.definitions, *info.references):
+                    if occ.file_uri == entry_file and occ.line == target_line and occ.symbol:
+                        had_local_candidates = True
+                        break
+            continue
         for ref in info.references:
             if ref.file_uri == entry_file and ref.line == target_line and ref.symbol:
                 ref_candidates.append(ref)
@@ -32,6 +41,13 @@ def locate_entry_symbol(
     candidates = def_candidates if def_candidates else ref_candidates
 
     if not candidates:
+        if had_local_candidates:
+            raise NoReferenceFoundError(
+                f"Only local symbols found at {entry_file}:{entry_line}. "
+                "local symbols are excluded from entry point selection. "
+                "Consider pointing to the function definition line or "
+                "a line with function calls."
+            )
         raise NoReferenceFoundError(
             f"No reference found at {entry_file}:{entry_line}"
         )

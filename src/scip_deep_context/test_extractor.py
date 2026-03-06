@@ -6,6 +6,7 @@ import os
 from typing import Dict, List, Optional, Tuple
 
 from scip_deep_context.models import SymbolInfo, SymbolRole
+from scip_deep_context.symbol_filter import is_local_symbol
 
 
 _TEST_FILE_PATTERNS = ("test_", "_test.", ".test.", "tests/", "test/")
@@ -49,7 +50,7 @@ def extract_test_symbols(
             continue
 
         # Skip local symbols
-        if sym_key.startswith("local "):
+        if is_local_symbol(sym_key):
             continue
 
         defn = info.definitions[0]

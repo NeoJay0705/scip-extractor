@@ -49,3 +49,5 @@ Thumbs.db
 
 # === Temporary / scratch files ===
 tmp_*
+neo_*
+NEO_*

@@ -54,6 +54,40 @@ pip install -e ./scip-deep-context
 
 ---
 
+## 快速決策：何時使用哪個工具
+
+| 需求 | 建議工具 | 對應情境 |
+|------|----------|---------|
+| 追蹤多層呼叫鏈（超過 1 層） | `scip-extract` | [情境 1](#情境-1提取函式的深層上下文markdown)、[情境 13](#情境-13分層探索--迭代式深層上下文提取) |
+| 反向查詢「誰呼叫了這個函式」 | `scip-graph-query --reverse-from` | [情境 5](#情境-5查詢--反向呼叫追蹤reverse) |
+| 分析「改了 X 會影響哪些測試」 | `scip-graph-query --test-impact` | [情境 6](#情境-6查詢--測試影響分析test-impact) |
+| 分析「某測試覆蓋了哪些 production code」 | `scip-graph-query --coverage` | [情境 7](#情境-7查詢--測試覆蓋分析coverage) |
+| 一次取得跨檔案完整上下文 | `scip-extract`（可搭配 `--graph-output`） | [情境 1](#情境-1提取函式的深層上下文markdown)、[情境 2](#情境-2提取函式的-call-graphjson) |
+| 合併多個入口點的圖後再查詢 | `scip-graph-merge` + `scip-graph-query` | [情境 3](#情境-3合併多個-graph-json)、[情境 8](#情境-8端到端工作流程) |
+| 搜尋字串、設定值、log 或註解文字 | `grep` | — |
+| 讀取已知路徑的檔案內容 | `view` | — |
+| 快速查看目錄與檔案結構 | `glob` | — |
+| 尚未建立 `index.scip` | 先依[前置作業](#建立-scip-索引)建索引，暫時使用 `grep/view` | [前置作業](#建立-scip-索引) |
+
+## 標準操作流程
+
+1. **前置**
+   - 確認已安裝 CLI 並完成 `index.scip` 建置；若源碼已變更，先重建索引再操作。
+
+2. **定位**
+   - 先用 `grep/glob` 找到進入點的檔案與行號，行號需對準函式 body。
+
+3. **提取**
+   - 用 `scip-extract` 產生 Markdown 上下文與（可選）Graph JSON，作為後續查詢基礎。
+
+4. **分析**
+   - 依需求使用 `scip-graph-query` 的 forward/reverse/test-impact/coverage，或先合併多個 graph 後再查詢。
+
+5. **應用**
+   - 從結果整理可執行的位置資訊（檔案路徑 + 行號範圍 + 目標符號），再進行修改、審查或測試規劃。
+
+---
+
 # 所有情境
 
 ## 情境 1：提取函式的深層上下文（Markdown）
@@ -72,7 +106,6 @@ scip-extract \
   --entry-file scripts/run_backtest.py \
   --entry-line 298 \
   --max-nodes 100000 \
-  --exclude-patterns "local *" \
   --timeout 20 \
   > backtest_context.md
 ```
@@ -105,7 +138,6 @@ scip-extract \
   --entry-file scripts/run_backtest.py \
   --entry-line 298 \
   --max-nodes 100000 \
-  --exclude-patterns "local *" \
   --timeout 20 \
   --graph-output backtest_graph.json \
   > backtest_context.md
@@ -155,6 +187,7 @@ scip-extract \
 | `metadata.entry_file` | 進入點檔案 |
 | `metadata.entry_line` | 進入點行號 |
 | `metadata.entry_symbol` | 進入點 symbol descriptor |
+| `metadata.context_file` | 對應的 Markdown 輸出檔名（`string|null`）；合併後作為 `source_layers` dict 的 key |
 | `nodes` | key 為 function-like symbol descriptor（含 `()` 且非 parameter symbol），value 包含檔案位置、BFS 層級、是否為測試節點。parameter symbols（`method().(param)` 格式）及 field symbols 預設排除 |
 | `nodes[].layer` | BFS 層級（0 = entry point） |
 | `nodes[].is_test` | 是否為測試節點（依 SymbolRole.TEST 或檔案路徑 pattern 判定） |
@@ -287,6 +320,7 @@ scip-graph-query \
       "file": "quant_factory/backtest.py",
       "lines": [100, 150],
       "is_test": false,
+      "is_partial": false,
       "source_layers": { "": 0 }
     }
   },
@@ -606,6 +640,48 @@ scip-graph-merge layer1_graph.json layer2_graph.json -o combined_graph.json
 
 ---
 
+## 工具分工：SCIP CLI 與 grep/view
+
+### SCIP CLI 的不可替代場景
+
+- **跨檔案呼叫追蹤**：從單一 entry point 展開多層呼叫鏈，直接取得語意級 caller/callee 關係（參見情境 1、4、5、13）。
+- **測試影響分析**：以結構化 graph 反向定位受影響測試，支援 `test-impact` 查詢（參見情境 6）。
+- **測試覆蓋分析**：從測試節點正向展開，識別覆蓋到的 production code（參見情境 7）。
+- **Call Graph 建構與重用**：提取一次後可多次查詢，或合併多個 graph 進行全域分析（參見情境 2、3、8）。
+
+### grep/view 的不可替代場景
+
+- **搜尋非代碼內容**：config、字串常量、log 訊息、註解內容等文字匹配。
+- **搜尋 SCIP 索引不涵蓋的語言或檔案類型**：例如 Markdown、YAML、shell script。
+- **已知路徑的快速讀取**：只需查看特定檔案片段，不需建構語意關係。
+- **目錄結構探索**：快速了解專案佈局與檔案組織。
+- **索引未就緒時的臨時作業**：`index.scip` 不存在或 CLI 不可用時，作為 fallback 工具。
+
+### 典型協作模式
+
+`grep/glob` 先定位入口 → `scip-extract` 建立語意上下文 → `scip-graph-query` 做深度分析 → `view` 補充非索引細節。
+
+## 故障排除與 Fallback
+
+| 條件 | 行為 |
+|------|------|
+| `index.scip` 不存在 | 先依[前置作業](#建立-scip-索引)建索引；未建索引前使用 `grep/view` |
+| CLI 工具不可用 | 改用 `grep/view` 完成文字層級定位與閱讀 |
+| 進入點定位失敗（exit code 非 0） | 調整 `--entry-line` 指向函式 body 後重試；仍失敗則改用 `grep/view` |
+| Markdown frontmatter 顯示 `collected_nodes: 1` | 視為 BFS 未展開，優先檢查行號與符號定位，再重新提取 |
+| Query 結果 `is_truncated: true` | 調整 `--max-depth` 或改以較小範圍分段查詢，避免直接依截斷結果下結論 |
+| 需求是非代碼文字搜尋 | 直接使用 `grep`，不走 SCIP query 流程 |
+
+## 關鍵注意事項
+
+1. **索引時效性**：`index.scip` 必須與當前源碼同步；源碼更新後未重建索引，可能造成符號與行號錯位。
+2. **行號 edge case**：進入點行號需落在函式 body；對含 type annotation 的 `def foo() -> int:`，應使用 def 行 + 1（body 首行），因為 SCIP 會將 def 行解析為 type reference 符號。
+3. **`is_truncated` 檢查**：不論是提取或查詢，都應檢查是否截斷；截斷結果代表分析可能不完整。
+4. **查詢模式互斥**：`--forward-from`、`--reverse-from`、`--test-impact`、`--coverage`、`--list-nodes` 每次只能擇一使用。
+5. **合併限制**：僅可合併來自同一版本 `index.scip` 的 graph；不同索引版本會造成符號 key 不一致。
+
+---
+
 ## 附錄：完整 CLI 參數表
 
 **scip-extract 參數**
@@ -618,7 +694,7 @@ scip-graph-merge layer1_graph.json layer2_graph.json -o combined_graph.json
 | `--entry-line` | integer | | — | 進入點行號（可指向定義行或引用行） | 情境 1, 2, 10, 11, 12, 13 |
 | `--max-nodes` | integer | | 10 | BFS 最大展開節點數 | 情境 1-13 |
 | `--timeout` | float | | 3.0 | 超時秒數 | 情境 1-13 |
-| `--exclude-patterns` | string | | `""` | 排除的 symbol pattern，逗號分隔（預設排除 `local *`） | 情境 1, 10, 12 |
+| `--exclude-patterns` | string | | `""` | 排除的 symbol pattern，逗號分隔（預設排除 `local *`） | 情境 10, 12 |
 | `--no-default-excludes` | flag | | false | 停用預設排除 pattern（如 `local *`） | 情境 10 |
 | `--test-file-pattern` | string | | — | 批次 extract：模糊搜尋測試檔名（glob pattern） | 情境 9 |
 | `--test-method-pattern` | string | | — | 批次 extract：模糊搜尋測試方法名（glob pattern） | 情境 9 |

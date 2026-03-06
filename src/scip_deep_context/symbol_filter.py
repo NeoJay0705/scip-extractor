@@ -82,6 +82,11 @@ def _has_empty_param_descriptor(symbol: str) -> bool:
     return ".()" in symbol
 
 
+def is_local_symbol(symbol: str) -> bool:
+    """Check if symbol is a SCIP local symbol (starts with ``local ``)."""
+    return symbol.startswith("local ")
+
+
 def is_function_like(symbol: str) -> bool:
     """判定 SCIP symbol 是否為 function-like。
 

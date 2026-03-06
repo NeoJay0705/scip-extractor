@@ -192,6 +192,7 @@
 |------|------|
 | `metadata.scip_index_hash` | SCIP 索引檔的 SHA256 雜湊，用於合併時驗證來源一致性 |
 | `metadata.entry_symbol` | 進入點 symbol descriptor |
+| `metadata.context_file` | 對應的 Markdown 輸出檔名（`string|null`）；合併後作為 `source_layers` dict 的 key |
 | `nodes[].layer` | BFS 層級（0 = entry point） |
 | `nodes[].is_test` | 是否為測試節點（依 SymbolRole.TEST 或檔案路徑 pattern 判定） |
 | `nodes[].is_partial` | 是否為部分擷取（`true` 表示代碼範圍不完整）。預設值：`false` |
@@ -240,6 +241,7 @@
 
 - 開頭為 YAML frontmatter（`---` 分隔），包含：
   - `collected_nodes`：收集到的節點數
+  - `max_nodes`：BFS 最大展開節點數（對應 `--max-nodes` 參數值）
   - `is_truncated`：是否因 max_nodes 而截斷
   - `duration_sec`：執行耗時
 - 主體為 code section，每個 section 對應一個被追蹤到的 symbol
