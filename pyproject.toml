@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scip-deep-context"
+version = "0.5.0"
+requires-python = ">=3.9"
+dependencies = ["pyyaml>=6.0", "protobuf>=4.0"]
+
+[project.scripts]
+scip-extract = "scip_deep_context.cli:main"
+scip-graph-merge = "scip_deep_context.cli:merge_main"
+scip-graph-query = "scip_deep_context.cli:query_main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+test = ["pytest>=7.0", "jsonschema>=4.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
