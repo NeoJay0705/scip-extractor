@@ -68,24 +68,31 @@ scip-extract \
 
 在已擷取的 graph 上做結構化分析（五種模式互斥）：
 
+> ⚠️ Node key 包含模組前綴（如 `` `scip_deep_context.cli`/main(). ``），不是短名稱。
+> **先用 `--list-nodes` 查看所有可用的 key**，再用 glob pattern 匹配查詢。
+
 | 查詢類型 | 指令 | 用途 |
 |---------|------|------|
-| 正向追蹤 | `--forward-from 'symbol().'` | 函式呼叫了哪些函式 |
-| 反向追蹤 | `--reverse-from 'symbol().'` | 誰呼叫了這個函式 |
-| 測試影響 | `--test-impact 'symbol().'` | 改了 X，哪些測試 break |
-| 測試覆蓋 | `--coverage 'TestClass#test().'` | 測試覆蓋了哪些 production code |
-| 列出節點 | `--list-nodes` | 查看所有可查詢的 symbol key |
+| 列出節點 | `--list-nodes` | 查看所有可查詢的 symbol key（**建議先執行**） |
+| 正向追蹤 | `--forward-from '*symbol().'` | 函式呼叫了哪些函式 |
+| 反向追蹤 | `--reverse-from '*symbol().'` | 誰呼叫了這個函式 |
+| 測試影響 | `--test-impact '*symbol().'` | 改了 X，哪些測試 break |
+| 測試覆蓋 | `--coverage '*TestClass#test().'` | 測試覆蓋了哪些 production code |
 
 ```bash
-# 例：反向追蹤 — 誰呼叫了 check_rate()
-scip-graph-query \
-  --graph graph.json \
-  --reverse-from 'check_rate().'
+# 先查看所有 node key
+scip-graph-query --graph graph.json --list-nodes
 
-# 例：測試影響分析
+# 例：反向追蹤 — 誰呼叫了 traverse()（用 glob 匹配）
 scip-graph-query \
   --graph graph.json \
-  --test-impact 'BacktestEngine#run().'
+  --reverse-from '*traverse().'
+
+# 例：正向追蹤 depth 1（用 glob 匹配）
+scip-graph-query \
+  --graph graph.json \
+  --forward-from '*cli*/main().' \
+  --max-depth 1
 ```
 
 ### Step 4（可選）：合併多個 Graph
@@ -132,7 +139,7 @@ scip-graph-query --graph unified.json --test-impact 'target().'
 |------|------|
 | `index.scip` 不存在 | 依語言執行對應 indexer（Python: `npx @sourcegraph/scip-python index .`） |
 | exit code 2 | SCIP 載入或進入點定位失敗，調整行號 |
-| `collected_nodes: 1` | 行號未指向函式 body，調整後重試 |
+| `collected_nodes: 1` | 行號未指向函式定義行，調整後重試 |
 | `is_truncated: true` | 增大 `--max-nodes` 或分段擷取 |
 | 合併報 IndexHashMismatchError | 重建索引後需重新擷取所有 graph |
 
