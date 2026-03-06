@@ -1,0 +1,51 @@
+# === Python bytecode & caches ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# === Distribution / Packaging ===
+dist/
+build/
+*.egg-info/
+*.egg
+wheels/
+pip-wheel-metadata/
+
+# === Virtual environments ===
+.venv/
+venv/
+env/
+ENV/
+
+# === Testing & Coverage ===
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# === Type checking & Linting ===
+.mypy_cache/
+.pytype/
+.ruff_cache/
+
+# === IDE / Editor ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# === OS artifacts ===
+.DS_Store
+Thumbs.db
+
+# === SCIP index files (large, regenerated) ===
+*.scip
+
+# === Temporary / scratch files ===
+tmp_*
