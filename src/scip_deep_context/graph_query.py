@@ -51,13 +51,20 @@ class GraphQuery:
     ) -> dict[str, Any]:
         """Generic BFS traversal with Visited Set + max_depth (ADR-6).
 
-        Returns: {"nodes": {key: node_data}, "is_truncated": bool}
+        Returns:
+        {
+            "nodes": {key: node_data},
+            "is_truncated": bool,
+            "truncated_branches": [key, ...],
+        }
         Entry node is included in visited but not in result nodes.
         """
         result_nodes: dict[str, dict] = {}
         visited: set[str] = {start}
         queue: deque[tuple[str, int]] = deque([(start, 0)])
         is_truncated = False
+        truncated_branches: list[str] = []
+        truncated_seen: set[str] = set()
 
         while queue:
             current, depth = queue.popleft()
@@ -67,11 +74,18 @@ class GraphQuery:
                 visited.add(neighbor)
                 if depth + 1 > max_depth:
                     is_truncated = True
+                    if neighbor not in truncated_seen:
+                        truncated_seen.add(neighbor)
+                        truncated_branches.append(neighbor)
                     continue
                 result_nodes[neighbor] = self._nodes.get(neighbor, {})
                 queue.append((neighbor, depth + 1))
 
-        return {"nodes": result_nodes, "is_truncated": is_truncated}
+        return {
+            "nodes": result_nodes,
+            "is_truncated": is_truncated,
+            "truncated_branches": truncated_branches,
+        }
 
     def forward_from(
         self,
@@ -100,7 +114,20 @@ class GraphQuery:
             k: v for k, v in raw["nodes"].items()
             if v.get("is_test", False)
         }
-        return {"nodes": filtered, "is_truncated": raw["is_truncated"]}
+        warnings: list[str] = []
+        if not filtered and not any(
+            node.get("is_test", False) for node in self._nodes.values()
+        ):
+            warnings.append("no_test_nodes_in_graph")
+
+        result: dict[str, Any] = {
+            "nodes": filtered,
+            "is_truncated": raw["is_truncated"],
+            "truncated_branches": raw.get("truncated_branches", []),
+        }
+        if warnings:
+            result["warnings"] = warnings
+        return result
 
     def coverage(
         self,
@@ -108,9 +135,21 @@ class GraphQuery:
         max_depth: int = 10,
     ) -> dict[str, Any]:
         """Forward query filtered to is_test == false nodes (Q4)."""
+        warnings: list[str] = []
+        target_node = self._nodes.get(test, {})
+        if not target_node.get("is_test", False):
+            warnings.append("target_is_not_test_function")
+
         raw = self.forward_from(test, max_depth)
         filtered = {
             k: v for k, v in raw["nodes"].items()
             if not v.get("is_test", False)
         }
-        return {"nodes": filtered, "is_truncated": raw["is_truncated"]}
+        result: dict[str, Any] = {
+            "nodes": filtered,
+            "is_truncated": raw["is_truncated"],
+            "truncated_branches": raw.get("truncated_branches", []),
+        }
+        if warnings:
+            result["warnings"] = warnings
+        return result

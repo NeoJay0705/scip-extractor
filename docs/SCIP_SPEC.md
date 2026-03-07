@@ -154,15 +154,15 @@
 
 #### 查詢行為
 
-| 模式 | BFS 方向 | 結果過濾 | 說明 | 關聯情境 |
-|------|---------|---------|------|---------|
-| `--forward-from` | 正向 | 無 | 找出 callee 鏈 | 情境 4 |
-| `--reverse-from` | 反向 | 無 | 找出 caller 鏈 | 情境 5 |
-| `--test-impact` | 反向 | `is_test=true` | 找出受影響的測試 | 情境 6 |
-| `--coverage` | 正向 | `is_test=false` | 找出被覆蓋的 production code | 情境 7 |
-| `--list-nodes` | — | — | 列出所有節點 key | 情境 8 |
+| 模式 | BFS 方向 | 結果過濾 | 附加輸出 | 說明 | 關聯情境 |
+|------|---------|---------|---------|------|---------|
+| `--forward-from` | 正向 | 無 | — | 找出 callee 鏈 | 情境 4 |
+| `--reverse-from` | 反向 | 無 | — | 找出 caller 鏈 | 情境 5 |
+| `--test-impact` | 反向 | `is_test=true` | `warnings: ["no_test_nodes_in_graph"]`（條件） | 找出受影響的測試。⚠️ graph 需含 test nodes（`is_test=true`）；空結果且整張 graph 無 test nodes 時觸發 warning | 情境 6 |
+| `--coverage` | 正向 | `is_test=false` | `warnings: ["target_is_not_test_function"]`（條件） | 找出被覆蓋的 production code。⚠️ 預期目標為測試函式（`is_test=true`）；非測試目標時退化為 `--forward-from` 語義，僅新增 warning 不改結果集 | 情境 7 |
+| `--list-nodes` | — | — | — | 列出所有節點 key | 情境 8 |
 
-**截斷行為**：BFS 在 `max_depth` 處截斷時，回傳 `is_truncated: true`，stderr 輸出警告。
+**截斷行為**：BFS 在 `max_depth` 處截斷時，回傳 `is_truncated: true` 及 `truncated_branches`（去重、BFS 發現順序排列的被截斷分支 node keys），stderr 輸出 `Warning: result truncated at max_depth=N`。`warnings` 亦同步輸出至 stderr（每個 warning 一行）。
 
 **原因**：五種模式覆蓋程式碼追蹤的典型需求——正向/反向追蹤、測試影響評估、覆蓋率分析。glob pattern 支援讓使用者無需知道完整 symbol 即可查詢。
 
@@ -244,12 +244,21 @@
 ```json
 {
   "nodes": { "..." : "..." },
-  "is_truncated": "<bool>"
+  "is_truncated": true,
+  "truncated_branches": [
+    "DataLoader#load().",
+    "Optimizer#step()."
+  ],
+  "warnings": ["no_test_nodes_in_graph"]
 }
 ```
 
-- `nodes`：符合條件的節點（不含起點本身）
-- `is_truncated`：`true` 表示 BFS 在 `max_depth` 處截斷
+| 欄位 | 類型 | 必要性 | 說明 |
+|------|------|:------:|------|
+| `nodes` | object | 必要 | 符合條件的節點（不含起點本身） |
+| `is_truncated` | bool | 必要 | `true` 表示 BFS 在 `max_depth` 處截斷 |
+| `truncated_branches` | list[str] | 必要 | 被 `max_depth` 截斷的分支 node keys（去重、BFS 發現順序）；未截斷時為空陣列 `[]` |
+| `warnings` | list[str] | 條件 | 查詢警告陣列。`test_impact` 空結果 + graph 無 test nodes 時含 `"no_test_nodes_in_graph"`；`coverage` 目標非測試函式時含 `"target_is_not_test_function"`。無 warning 時此欄位不出現 |
 
 #### 4.3.2 With-source Markdown 輸出（條件模式）
 
@@ -260,8 +269,17 @@
 query_type: forward_from
 entry_node: "main()."
 result_nodes: 5
-is_truncated: false
+is_truncated: true
+warnings:
+- no_test_nodes_in_graph
 ---
+
+> ⚠️ Warning: no_test_nodes_in_graph
+
+### Truncated Branches
+- `DataLoader#load().`
+- `Optimizer#step().`
+- ... and 3 more
 
 ## Query Result
 
@@ -276,14 +294,21 @@ def run(self):
 
 **frontmatter 欄位**：
 
-| 欄位 | 說明 |
-|------|------|
-| `query_type` | 查詢類型（`forward_from` / `reverse_from` / `test_impact` / `coverage`） |
-| `entry_node` | 查詢起點 node key |
-| `result_nodes` | 結果節點數 |
-| `is_truncated` | 是否截斷 |
+| 欄位 | 類型 | 必要性 | 說明 |
+|------|------|:------:|------|
+| `query_type` | string | 必要 | 查詢類型（`forward_from` / `reverse_from` / `test_impact` / `coverage`） |
+| `entry_node` | string | 必要 | 查詢起點 node key |
+| `result_nodes` | int | 必要 | 結果節點數 |
+| `is_truncated` | bool | 必要 | 是否截斷 |
+| `warnings` | list[str] | 條件 | 查詢警告（同 §4.3.1 `warnings` 語義）；無 warning 時不出現 |
 
-**原因**：`--with-source` 為條件式輸出模式切換——預設不改變 JSON 行為，啟用時為 Agent 提供可直接閱讀的 Markdown 上下文，消除逐一 `view` 源檔的步驟。關聯情境：情境 15。
+**Markdown 正文渲染順序**：
+
+1. **Warnings blockquote**（條件）：`warnings` 非空時，輸出 `> ⚠️ Warning: {warning}`，每個 warning 一行
+2. **Truncated Branches 區段**（條件）：`truncated_branches` 非空時，輸出 `### Truncated Branches` + bullet list（最多 10 個，超過顯示 `... and N more`）
+3. **Query Result 區段**：`## Query Result` + 各節點 code fence
+
+**原因**：`--with-source` 為條件式輸出模式切換——預設不改變 JSON 行為，啟用時為 Agent 提供可直接閱讀的 Markdown 上下文，消除逐一 `view` 源檔的步驟。warnings 與 truncated branches 的 Markdown 渲染確保查詢的完整診斷資訊以人類可讀格式呈現。關聯情境：情境 15。
 
 ### 4.4 Markdown 輸出格式
 
@@ -370,6 +395,16 @@ def run(self):
 
 - **BFS 與 Graph JSON 不受影響**：`--output-modules` 僅控制 Markdown 輸出展示範圍
 - **不帶此參數時行為不變**：全部節點渲染至 Markdown（與既有行為一致）
+
+**Query 結果 `truncated_branches` 與 `warnings` 欄位（v0.7.0 加法變更）**：
+
+- **`truncated_branches`**：所有查詢模式（`forward_from`/`reverse_from`/`test_impact`/`coverage`）的 JSON 回傳值新增此欄位（`list[str]`），未截斷時為空陣列。未讀取此欄位的既有程式碼可安全忽略（JSON 標準行為——忽略未知欄位）
+- **`warnings`**：`test_impact` 和 `coverage` 的 JSON 回傳值條件性新增此欄位（`list[str]`）。僅在觸發 warning 時出現，既有消費者可安全忽略
+- **stderr 輸出**：新增 warnings 的 stderr 輸出（每個 warning 一行），不影響 stdout 的結構化輸出
+- **Exit code 不變**：warnings 為診斷訊息，不改變任何 exit code 語義
+- **Markdown 渲染**：`--with-source` 模式新增 `> ⚠️ Warning:` blockquote 和 `### Truncated Branches` 區段，不影響既有 `## Query Result` 結構
+
+**原因**：`truncated_branches` 和 `warnings` 為可觀測性增強（INT-01/02/03），選擇加法變更策略以確保既有工具鏈無需修改即可繼續運作。關聯情境：情境 4-7、15。
 
 ---
 

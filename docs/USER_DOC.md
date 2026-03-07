@@ -76,8 +76,8 @@ pip install -e ./scip-deep-context
 |---------|------|----------|---------|
 | 需要理解函式 X 呼叫了什麼（超過 1 層） | 追蹤多層呼叫鏈 | `scip-extract` | [情境 1](#情境-1提取函式的深層上下文markdown)、[情境 13](#情境-13分層探索--迭代式深層上下文提取) |
 | 想確認誰呼叫了某函式 | 反向查詢「誰呼叫了這個函式」 | `scip-graph-query --reverse-from` | [情境 5](#情境-5查詢--反向呼叫追蹤reverse) |
-| 改了某函式，想知道影響哪些測試 | 分析「改了 X 會影響哪些測試」 | `scip-graph-query --test-impact` | [情境 6](#情境-6查詢--測試影響分析test-impact) |
-| 想知道某測試覆蓋到哪些 production code | 分析「某測試覆蓋了哪些 production code」 | `scip-graph-query --coverage` | [情境 7](#情境-7查詢--測試覆蓋分析coverage) |
+| 改了某函式，想知道影響哪些測試 | 分析「改了 X 會影響哪些測試」 | `scip-graph-query --test-impact` | [情境 6](#情境-6查詢--測試影響分析test-impact)（⚠️ graph 需含 test nodes） |
+| 想知道某測試覆蓋到哪些 production code | 分析「某測試覆蓋了哪些 production code」 | `scip-graph-query --coverage` | [情境 7](#情境-7查詢--測試覆蓋分析coverage)（⚠️ 目標應為測試函式） |
 | 需要一次看完整跨檔上下文 | 一次取得跨檔案完整上下文 | `scip-extract`（可搭配 `--graph-output`） | [情境 1](#情境-1提取函式的深層上下文markdown)、[情境 2](#情境-2提取函式的-call-graphjson) |
 | 有多個入口點結果，想整合後查詢 | 合併多個入口點的圖後再查詢 | `scip-graph-merge` + `scip-graph-query` | [情境 3](#情境-3合併多個-graph-json)、[情境 8](#情境-8端到端工作流程) |
 | 只想看特定模組的代碼上下文 | Markdown 僅輸出指定模組的代碼 | `scip-extract --output-modules` | [情境 14](#情境-14模組級輸出過濾--output-modules) |
@@ -348,12 +348,17 @@ scip-graph-query \
       "source_layers": { "": 0 }
     }
   },
-  "is_truncated": false
+  "is_truncated": true,
+  "truncated_branches": [
+    "DataLoader#load().",
+    "Optimizer#step()."
+  ]
 }
 ```
 - `nodes`：符合條件的節點（不含起點本身）
 - `is_truncated`：`true` 表示 BFS 在 `max_depth` 處截斷，可能有更多節點
-- 若 truncated，stderr 輸出警告訊息
+- `truncated_branches`：截斷時列出被 `max_depth` 截斷的分支 node keys（去重、BFS 發現順序）；未截斷時為空陣列 `[]`
+- 若 truncated，stderr 輸出 `Warning: result truncated at max_depth=N`
 
 > 💡 若需在查詢結果中直接查看源碼，可加上 `--with-source --project-root .`，輸出將從 JSON 切換為 Markdown 並附帶 code fence。詳見[情境 15](#情境-15查詢附帶源碼--with-source)。
 
@@ -372,7 +377,7 @@ scip-graph-query \
   --reverse-from 'BacktestEngine#run().'
 ```
 
-**預期結果：** 同情境 4 格式，列出所有呼叫者（callers）。
+**預期結果：** 同情境 4 JSON 格式，列出所有呼叫者（callers）。含 `truncated_branches`（截斷時非空）與 `is_truncated` 欄位。
 
 ---
 
@@ -382,6 +387,10 @@ scip-graph-query \
 
 **操作方式：** command line
 
+**操作前置作業：** 透過情境 2 或情境 3 產出 graph JSON
+
+**前提條件：** graph 必須含測試節點（`is_test=true`）。若 graph 僅從 production code 提取，需從測試檔案另行提取並用 `scip-graph-merge` 合併，否則 `--test-impact` 會返回空結果並觸發 `no_test_nodes_in_graph` warning。
+
 **指令：**
 ```bash
 scip-graph-query \
@@ -389,7 +398,9 @@ scip-graph-query \
   --test-impact 'BacktestEngine#run().'
 ```
 
-**預期結果：** 同情境 4 格式，但 `nodes` 只包含 `is_test=true` 的測試節點。
+**預期結果：** 同情境 4 JSON 格式，但 `nodes` 只包含 `is_test=true` 的測試節點。額外欄位：
+- `warnings`：當結果為空且整張 graph 無 test nodes 時，值為 `["no_test_nodes_in_graph"]`（stderr 同步輸出 `Warning: no_test_nodes_in_graph`）；正常時此欄位不出現
+- `truncated_branches`：截斷時列出被截斷的分支（同情境 4）
 
 **使用場景：** 修改了某個函式後，快速確認需要重新執行哪些測試。
 
@@ -401,6 +412,10 @@ scip-graph-query \
 
 **操作方式：** command line
 
+**操作前置作業：** 透過情境 2 或情境 3 產出 graph JSON
+
+**前提條件：** 目標節點應為測試函式（`is_test=true`）。若對 production 函式使用 `--coverage`，結果等同 `--forward-from`（退化行為），不具覆蓋率語義，且會觸發 `target_is_not_test_function` warning。
+
 **指令：**
 ```bash
 scip-graph-query \
@@ -408,7 +423,9 @@ scip-graph-query \
   --coverage 'TestBacktest#test_run().'
 ```
 
-**預期結果：** 同情境 4 格式，但 `nodes` 只包含 `is_test=false` 的 production 節點。
+**預期結果：** 同情境 4 JSON 格式，但 `nodes` 只包含 `is_test=false` 的 production 節點。額外欄位：
+- `warnings`：當目標節點 `is_test=false` 時，值為 `["target_is_not_test_function"]`（stderr 同步輸出 `Warning: target_is_not_test_function`）；目標為測試函式時此欄位不出現
+- `truncated_branches`：截斷時列出被截斷的分支（同情境 4）
 
 **使用場景：** 評估某個測試的覆蓋範圍，找出未被覆蓋的 production code。
 
@@ -755,8 +772,16 @@ scip-graph-query \
 query_type: forward_from
 entry_node: "main()."
 result_nodes: 5
-is_truncated: false
+is_truncated: true
+warnings:
+- no_test_nodes_in_graph
 ---
+
+> ⚠️ Warning: no_test_nodes_in_graph
+
+### Truncated Branches
+- `DataLoader#load().`
+- `Optimizer#step().`
 
 ## Query Result
 
@@ -771,7 +796,10 @@ def run(self):
 
 - 輸出格式從 JSON 切換為 Markdown，包含 YAML frontmatter + `## Query Result` 區段
 - 每個節點附帶 code fence（自動偵測語言）
-- frontmatter 包含 `query_type`、`entry_node`、`result_nodes`、`is_truncated`
+- frontmatter 包含 `query_type`、`entry_node`、`result_nodes`、`is_truncated`、`warnings`（條件出現）
+- `warnings` frontmatter：當查詢產生 warnings 時出現（如 `no_test_nodes_in_graph`、`target_is_not_test_function`），無 warning 時不出現
+- `> ⚠️ Warning:` blockquote：當 `warnings` 非空時，在 frontmatter 之後、Truncated Branches 之前輸出，每個 warning 一行
+- `### Truncated Branches`：當 `truncated_branches` 非空時出現，以 bullet list 列出截斷分支（最多 10 個，超過顯示 `... and N more`）
 - 不帶 `--with-source` 時仍輸出 JSON（行為不變）
 - `--with-source` 與 `--list-nodes` 互斥
 
@@ -809,7 +837,10 @@ def run(self):
 | 進入點定位失敗（exit code 非 0） | 優先改用函式定義行（`def`/`func`）或含函式呼叫的 body 行重試；仍失敗則改用 `grep/view` |
 | 錯誤訊息 `Only local symbols found` | 行號指向的行僅含 local variable 賦值（如 `x = foo()` 中的 `x`），無 function-level symbol。改用函式定義行（`def`/`func`）或含函式呼叫的行作為進入點 |
 | Markdown frontmatter 顯示 `collected_nodes: 1` | 視為 BFS 未展開，優先檢查行號與符號定位，再重新提取 |
-| Query 結果 `is_truncated: true` | 調整 `--max-depth` 或改以較小範圍分段查詢，避免直接依截斷結果下結論 |
+| Query 結果 `is_truncated: true` | 調整 `--max-depth` 或改以較小範圍分段查詢，避免直接依截斷結果下結論。查看 `truncated_branches` 陣列了解哪些分支被截斷 |
+| Query 結果含 `truncated_branches` 非空陣列 | 列出被 `max_depth` 截斷的分支 node keys；可以這些 node 為起點執行新一輪查詢以取得完整結果 |
+| `test_impact` 返回空結果 + `no_test_nodes_in_graph` warning | 整張輸入 graph 不含任何 `is_test=true` 的節點。從測試檔案提取 graph 並用 `scip-graph-merge` 合併後重試 |
+| `coverage` 結果 + `target_is_not_test_function` warning | 目標節點並非測試函式（`is_test=false`），結果等同 `--forward-from` 的退化行為。確認目標為測試函式後重試，或改用 `--forward-from` |
 | Markdown frontmatter `is_truncated: true` | 參考 Summary 的 `### Truncated Branches` 列表了解被截斷的分支，再以截斷分支為新 entry point 進行分層探索（[情境 13](#情境-13分層探索--迭代式深層上下文提取)） |
 | 需求是非代碼文字搜尋 | 直接使用 `grep`，不走 SCIP query 流程 |
 

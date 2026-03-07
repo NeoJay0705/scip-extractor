@@ -132,6 +132,10 @@ context.md 可能數千行（95 nodes ≈ 4800 行）。不要一次讀取整個
 | 測試影響 | `--test-impact '*symbol().'` | 改了 X，哪些測試 break |
 | 測試覆蓋 | `--coverage '*TestClass#test().'` | 測試覆蓋了哪些 production code |
 
+> ⚠️ **測試相關查詢前提**：`--test-impact` 和 `--coverage` 要求 graph 中包含測試節點（`is_test=true`）。若 graph 僅從 production code 入口擷取（如 `main()`），需另行從測試檔案擷取 graph 並用 `scip-graph-merge` 合併後使用。
+
+> ⚠️ **`--coverage` 非測試目標警告**：`--coverage` 應以測試函式為目標。對 production 函式使用時，結果退化為等同 `--forward-from`（返回所有可達節點），不具「覆蓋」語義，且會觸發 `warnings: ["target_is_not_test_function"]` + stderr 警告。
+
 ```bash
 # 先查看所有 node key
 scip-graph-query --graph graph.json --list-nodes
@@ -163,6 +167,10 @@ scip-graph-query \
 > `--with-source` 會將輸出從 JSON 切換為 Markdown（含 YAML frontmatter + 各節點源碼）。
 > 必須搭配 `--project-root` 指定專案根目錄，用於定位源碼檔案。
 > 與 `--list-nodes` 互斥（list-nodes 只列出 key，不需要源碼）。
+
+**截斷分支資訊（`truncated_branches`）：**
+
+graph-query 的 JSON 輸出在截斷時包含 `truncated_branches` 陣列，列出被 `max_depth` 截斷的 pending node keys。此陣列與 context.md Summary 區段的 "Truncated Branches" 語義類似但獨立計算——前者基於 graph-query 的 `--max-depth` 截斷，後者基於 scip-extract 的 `--max-nodes` / `--timeout` 截斷。
 
 ### Step 4（可選）：合併多個 Graph
 
@@ -203,6 +211,8 @@ scip-graph-query --graph unified.json --test-impact 'target().'
 | 讀取已知路徑 | view |
 | 目錄結構 | glob |
 | `index.scip` 不存在 | grep/view（建議使用者建索引） |
+
+> ⚠️ `--test-impact` 和 `--coverage` 要求 graph 中包含測試節點（`is_test=true`）。若 graph 僅從 production code 入口擷取（如 `main()`），需另行從測試檔案擷取 graph 並用 `scip-graph-merge` 合併後使用。`--coverage` 應以測試函式為目標；對 production 函式使用時，結果退化為等同 `--forward-from` 並觸發 `target_is_not_test_function` warning（見 Step 3）。
 
 ## 故障排除
 

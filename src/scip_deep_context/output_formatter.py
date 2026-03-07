@@ -361,14 +361,30 @@ def format_query_markdown(
     project_root: str,
 ) -> str:
     nodes = query_result.get("nodes", {})
+    warnings = query_result.get("warnings", [])
+    truncated_branches = query_result.get("truncated_branches", [])
     data = {
         "query_type": query_type,
         "entry_node": entry_node,
         "result_nodes": len(nodes),
         "is_truncated": bool(query_result.get("is_truncated", False)),
     }
+    if warnings:
+        data["warnings"] = warnings
 
     parts: list[str] = ["---\n", yaml.dump(data, default_flow_style=False, sort_keys=False), "---\n"]
+    if warnings:
+        parts.append("\n")
+        for warning in warnings:
+            parts.append(f"> ⚠️ Warning: {warning}\n")
+
+    if truncated_branches:
+        parts.append("\n### Truncated Branches\n")
+        for branch in truncated_branches[:10]:
+            parts.append(f"- `{branch}`\n")
+        if len(truncated_branches) > 10:
+            parts.append(f"- ... and {len(truncated_branches) - 10} more\n")
+
     parts.append("\n## Query Result\n")
     for symbol in sorted(nodes.keys()):
         node_meta = nodes[symbol]

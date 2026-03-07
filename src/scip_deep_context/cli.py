@@ -320,5 +320,7 @@ def query_main(argv=None) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     if result.get("is_truncated"):
         print(f"Warning: result truncated at max_depth={max_depth}", file=sys.stderr)
+    for warning in result.get("warnings", []):
+        print(f"Warning: {warning}", file=sys.stderr)
 
     return 0
