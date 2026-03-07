@@ -117,6 +117,7 @@ def format_output(
     dedup: bool = True,
     raw_symbols: bool = False,
     output_modules: Optional[list[str]] = None,
+    output_symbol_prefix: Optional[list[str]] = None,
 ) -> str:
     all_blocks = _collect_all_blocks(result)
 
@@ -126,16 +127,21 @@ def format_output(
     # Only override collected_nodes when dedup actually removed blocks
     rendered_count = len(deduped_blocks) if len(deduped_blocks) != len(all_blocks) else None
 
-    rendered_nodes: Optional[int] = None
+    filtered_blocks = deduped_blocks
     if output_modules:
         filtered_blocks = [
-            block for block in deduped_blocks
+            block for block in filtered_blocks
             if _matches_output_modules(block.symbol, output_modules)
         ]
-        filtered_symbols = {b.symbol for b in filtered_blocks}
-        rendered_nodes = len(filtered_blocks)
-    else:
-        filtered_symbols = deduped_symbols
+    if output_symbol_prefix:
+        filtered_blocks = [
+            block for block in filtered_blocks
+            if _matches_output_symbol_prefix(block.symbol, output_symbol_prefix)
+        ]
+
+    has_output_filter = bool(output_modules) or bool(output_symbol_prefix)
+    rendered_nodes: Optional[int] = len(filtered_blocks) if has_output_filter else None
+    filtered_symbols = {b.symbol for b in filtered_blocks}
 
     meta = _build_metadata(
         result,
@@ -257,6 +263,14 @@ def _matches_output_modules(symbol: str, output_modules: list[str]) -> bool:
     if not pkg:
         return False
     return match_module_patterns(pkg, output_modules)
+
+
+def _matches_output_symbol_prefix(symbol: str, output_symbol_prefix: list[str]) -> bool:
+    """Check if a symbol's descriptor starts with any of the given prefixes."""
+    if not output_symbol_prefix:
+        return True
+    descriptor = _extract_descriptor(symbol)
+    return any(descriptor.startswith(prefix) for prefix in output_symbol_prefix)
 
 
 def _render_summary(

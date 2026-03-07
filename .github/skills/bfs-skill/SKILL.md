@@ -13,10 +13,17 @@ description: >
 
 ## 前提條件
 
-- 專案根目錄存在 `index.scip`（SCIP 靜態分析索引）
-- 已安裝 `scip-extract`、`scip-graph-merge`、`scip-graph-query` CLI 工具（透過 `pip install -e .` 或 `pipx install .` 於專案根目錄安裝）
+- 已安裝對應語言的 SCIP indexer（見 Step 0），每次使用前先重建 `index.scip` 以確保與當前代碼一致
+- 已安裝 `scip-extract`、`scip-graph-merge`、`scip-graph-query` CLI 工具：
+  ```bash
+  # 檢查是否已安裝
+  which scip-extract || {
+    git clone git@github.com:NeoJay0705/scip-extractor.git /tmp/scip-extractor
+    pip install -e /tmp/scip-extractor
+  }
+  ```
 
-若 `index.scip` 不存在或 CLI 不可用，fallback 至 grep/view。
+若上述工具未安裝，**請先要求使用者安裝**後再繼續，不要 fallback 至 grep/view。
 
 ---
 
@@ -28,27 +35,31 @@ description: >
 
 **Python：**
 ```bash
-# 檢查是否已安裝
+# 檢查是否已安裝，未安裝則安裝
 which scip-python || npm install -g @sourcegraph/scip-python
 
 # 啟動 virtualenv（必須，scip-python 需從 virtualenv 解析 import）
 source .venv/bin/activate
 
-# 建立索引
+# 建立索引（--project-name 會成為 SCIP package name，影響 --output-modules 與 --project-modules 的匹配粒度）
 scip-python index . --project-name=MY_PROJECT
 ```
 > 需要 Node v16+ 與 Python 3.10+。若遇 OOM，設定 `NODE_OPTIONS="--max-old-space-size=8192"`。
 
 **Go：**
 ```bash
-go install github.com/sourcegraph/scip-go/cmd/scip-go@latest  # 首次安裝
+# 檢查是否已安裝，未安裝則安裝
+which scip-go || go install github.com/sourcegraph/scip-go/cmd/scip-go@latest
+
 # 在專案根目錄（含 go.mod）執行：
 scip-go
 ```
 
 **TypeScript / JavaScript：**
 ```bash
-npm install -g @sourcegraph/scip-typescript  # 首次安裝
+# 檢查是否已安裝，未安裝則安裝
+which scip-typescript || npm install -g @sourcegraph/scip-typescript
+
 npm install  # 確保 node_modules 存在
 # TypeScript（需 tsconfig.json）：
 scip-typescript index
@@ -113,9 +124,10 @@ scip-extract \
 context.md 可能數千行（95 nodes ≈ 4800 行）。不要一次讀取整個檔案：
 1. **先讀 frontmatter**：確認 `collected_nodes`、`is_truncated` 狀態
 2. **讀 Summary 區段**：快速掌握模組分佈、Layer 結構、截斷分支（取代逐一 grep headers）
-3. **用 `--output-modules` 過濾輸出**：若只關注特定模組，重新擷取時加入 `--output-modules "target_module"` 僅輸出該模組的 Markdown（BFS 仍完整展開，不影響 Graph JSON）
-4. **用 graph-query 做結構化查詢**：`--forward-from` / `--reverse-from` 精準追蹤特定分支，加 `--with-source` 直接取得源碼
-5. **按需 view 特定節點**：根據 graph-query 結果只讀需要的函式代碼
+3. **用 graph-query 做結構化查詢**：`--forward-from` / `--reverse-from` 精準追蹤特定分支，加 `--with-source --project-root .` 直接取得源碼（最推薦）
+4. **用 `--output-symbol-prefix` 過濾輸出**：若只關注特定子模組，加入 `--output-symbol-prefix "module_a/submodule"` 僅輸出 descriptor 以該前綴開頭的節點（適用於單一 SCIP package 的專案）
+5. **用 `--output-modules` 過濾輸出**：若專案含多個 SCIP package，加入 `--output-modules "target_module"` 僅輸出該 package 的 Markdown。⚠️ 對單一 SCIP package 的專案（多數 Python 專案），此參數無法做子模組過濾——所有代碼歸屬同一 package name，過濾結果為「全有或全無」，改用 `--output-symbol-prefix`
+6. **按需 view 特定節點**：根據 graph-query 結果只讀需要的函式代碼
 
 ### Step 3：查詢呼叫圖
 
@@ -206,7 +218,8 @@ scip-graph-query --graph unified.json --test-impact 'target().'
 | 測試覆蓋了什麼 | **scip-graph-query --coverage** |
 | 跨檔案完整上下文 | **scip-extract** |
 | 查詢結果同時要看源碼 | **scip-graph-query --with-source** |
-| 只看特定模組的上下文 | **scip-extract --output-modules** |
+| 只看特定子模組的上下文（單 package 專案） | **scip-extract --output-symbol-prefix** |
+| 只看特定 SCIP package 的上下文（多 package 專案） | **scip-extract --output-modules** |
 | 搜尋字串 / config / log | grep |
 | 讀取已知路徑 | view |
 | 目錄結構 | glob |
@@ -218,11 +231,11 @@ scip-graph-query --graph unified.json --test-impact 'target().'
 
 | 問題 | 處理 |
 |------|------|
-| `index.scip` 不存在 | 依語言執行對應 indexer（見 Step 0） |
+| `index.scip` 不存在或過時 | 執行 Step 0 重建索引（每次使用前都應重建） |
 | `collected_nodes: 1` | 行號未指向函式定義行，調整後重試 |
 | `is_truncated: true` | 查看 Summary 的 Truncated Branches，以關鍵分支為新進入點分段擷取；或增大 `--max-nodes` |
 | 合併報 IndexHashMismatchError | 重建索引後需重新擷取所有 graph |
-| context.md 太大、只需特定模組 | 加 `--output-modules "module_name"` 僅輸出該模組（BFS 不變） |
+| context.md 太大、只需特定子模組 | 加 `--output-symbol-prefix "submodule"` 按 descriptor prefix 過濾（單 package 專案適用）；或 `--output-modules "module_name"` 按 SCIP package 過濾（多 package 專案適用） |
 
 ### Exit Code 參考
 
@@ -256,7 +269,8 @@ scip-graph-query --graph unified.json --test-impact 'target().'
 
 | 參數 | 說明 |
 |------|------|
-| `--output-modules` | 僅輸出指定模組的 Markdown（逗號分隔，BFS 仍完整展開）。模組名稱為 SCIP package name（如 `scip_deep_context`），非 Python import path |
+| `--output-modules` | 僅輸出指定 SCIP package 的 Markdown（逗號分隔，BFS 仍完整展開）。模組名稱為 SCIP package name（如 `scip_deep_context`），非 Python import path。⚠️ 對單一 SCIP package 專案無法做子模組過濾，改用 `--output-symbol-prefix` |
+| `--output-symbol-prefix` | 僅輸出 descriptor 以指定前綴開頭的節點 Markdown（逗號分隔，BFS 仍完整展開）。前綴為 SCIP descriptor 的 module path（以 `/` 分隔），case-sensitive。適用於單一 SCIP package 專案的子模組過濾。可用 `--raw-symbols` 查看完整 descriptor 確認前綴格式 |
 | `--include-fields` | BFS 包含 field/property symbols |
 | `--no-default-excludes` | 停用預設排除（含 local variable） |
 | `--exclude-patterns` | 自訂排除 pattern（逗號分隔） |
@@ -266,7 +280,7 @@ scip-graph-query --graph unified.json --test-impact 'target().'
 | `--test-file-pattern` | 批次提取：匹配測試檔名（與 `--entry-file` 互斥） |
 | `--test-method-pattern` | 批次提取：匹配測試方法名 |
 
-> **`--project-modules` vs `--output-modules`**：前者控制 BFS 展開邊界（不追蹤模組外的呼叫），後者控制 Markdown 輸出過濾（BFS 完整展開但只渲染指定模組）。兩者可獨立或同時使用。
+> **`--project-modules` vs `--output-modules` vs `--output-symbol-prefix`**：`--project-modules` 控制 BFS 展開邊界（不追蹤模組外的呼叫）；`--output-modules` 控制 Markdown 輸出的 SCIP package 過濾（BFS 完整展開但只渲染指定 package）；`--output-symbol-prefix` 控制 Markdown 輸出的 descriptor prefix 過濾（適用於單 SCIP package 專案的子模組過濾）。三者可獨立或組合使用，`--output-modules` 和 `--output-symbol-prefix` 同時啟用時為 AND 關係。
 
 **scip-graph-query：**
 

@@ -75,7 +75,8 @@
 | `--raw-symbols` | flag | | false | section header 顯示完整 SCIP symbol |
 | `--graph-output` | string | | — | 輸出路徑；覆寫現有檔案 |
 | `--include-fields` | flag | | false | 在 BFS 中包含 field/property symbols（預設排除） |
-| `--output-modules` | string | | `""` | 逗號分隔的模組名稱，僅過濾 Markdown 輸出（BFS 與 Graph JSON 不受影響）。模組名稱為 SCIP package name（非語言原生 module path） |
+| `--output-modules` | string | | `""` | 逗號分隔的模組名稱，僅過濾 Markdown 輸出（BFS 與 Graph JSON 不受影響）。模組名稱為 SCIP package name（非語言原生 module path）。⚠️ 單 package 專案中為全選或全不選 |
+| `--output-symbol-prefix` | string | | `""` | 逗號分隔的 descriptor prefix 列表，僅過濾 Markdown 輸出（BFS 與 Graph JSON 不受影響）。prefix 間 OR、與 `--output-modules` 為 AND。匹配規則：`descriptor.startswith(prefix)`，區分大小寫、strip 空白、忽略空 token、靜默去重 |
 | `--version` | flag | | — | 顯示版本號 |
 
 > † **進入點模式**：`--entry-file` + `--entry-line` 必須同時出現。  
@@ -318,7 +319,7 @@ def run(self):
   - `is_truncated`：是否因 max_nodes 或 timeout 而截斷
   - `truncation_reasons`：截斷原因列表（如 `["max_nodes"]`、`["timeout"]`），未截斷時為空陣列
   - `duration_sec`：執行耗時
-  - `rendered_nodes`：通過 `--output-modules` 過濾後實際渲染的節點數（僅 `--output-modules` 啟用時出現）
+  - `rendered_nodes`：通過輸出過濾後實際渲染的節點數（任一輸出過濾參數——`--output-modules` 或 `--output-symbol-prefix`——啟用時出現；兩者並用時為 AND 過濾後的節點數）
 - frontmatter 之後、Layer 0 代碼區段之前，插入 `## Summary` 區段（見下方格式）
 - 主體為 code section，每個 section 對應一個被追蹤到的 symbol
 
@@ -406,6 +407,23 @@ def run(self):
 
 **原因**：`truncated_branches` 和 `warnings` 為可觀測性增強（INT-01/02/03），選擇加法變更策略以確保既有工具鏈無需修改即可繼續運作。關聯情境：情境 4-7、15。
 
+**`--output-symbol-prefix` 新增參數與 `rendered_nodes` 觸發條件擴充（v0.8.0 加法變更）**：
+
+- **`--output-symbol-prefix`**：新增 CLI 參數，純 additive 變更。既有 CLI 呼叫不含此參數時行為完全不變
+- **`rendered_nodes` 觸發條件擴充**：由「僅 `--output-modules` 啟用時出現」擴充為「任一輸出過濾參數（`--output-modules` 或 `--output-symbol-prefix`）啟用時出現」。既有使用 `--output-modules` 的腳本行為不變（仍會出現 `rendered_nodes`）
+- **`rendered_nodes` 決策矩陣**：
+
+| 情境 | `--output-modules` | `--output-symbol-prefix` | `rendered_nodes` 行為 |
+|------|:------------------:|:------------------------:|----------------------|
+| 無過濾 | ✗ | ✗ | 不出現 |
+| 僅 module 過濾 | ✓ | ✗ | 出現 |
+| 僅 prefix 過濾 | ✗ | ✓ | 出現 |
+| 兩者並用 | ✓ | ✓ | 出現（AND 過濾後的節點數） |
+
+- **prefix 匹配規則**：`descriptor.startswith(prefix)`，區分大小寫、strip 空白、忽略空 token、靜默去重。使用者應先透過 Summary `### Modules` 或 `--raw-symbols` 確認實際 descriptor 格式
+
+**原因**：`--output-symbol-prefix` 為 REQ-INT-01 新功能需求，提供 descriptor 層級的 Markdown 輸出過濾能力，特別解決單 SCIP package 專案中 `--output-modules` 無法細粒度過濾的問題。`rendered_nodes` 觸發條件擴充為語義一致性修正——任何啟用輸出過濾的情境均應報告實際渲染節點數。關聯情境：情境 14。
+
 ---
 
 ## 五、Agent Skill 介面契約
@@ -460,7 +478,7 @@ def run(self):
 | 11 | Dedup 控制與 Raw Symbols | scip-extract | §3.1 |
 | 12 | 多模組 Symbol 過濾 | scip-extract | §3.1 |
 | 13 | 分層探索 — 迭代式深層上下文提取 | scip-extract, scip-graph-merge | §3.1, §3.2, §4.1, §4.2 |
-| 14 | 模組級輸出過濾 | scip-extract | §3.1, §4.4 |
+| 14 | 模組級輸出過濾（`--output-modules` / `--output-symbol-prefix`） | scip-extract | §3.1, §4.4, §4.5 |
 | 15 | 查詢附帶源碼 | scip-graph-query | §3.3, §4.3 |
 
 ---

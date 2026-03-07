@@ -15,6 +15,22 @@ from scip_deep_context.output_formatter import format_output, format_graph_json
 _DEFAULT_EXCLUDES = ["local *"]
 
 
+def _parse_csv(value: str, *, dedup: bool = False) -> list[str]:
+    """Parse a comma-separated string into a list of stripped, non-empty tokens."""
+    if not value or not value.strip():
+        return []
+    tokens = [token.strip() for token in value.split(",") if token.strip()]
+    if not dedup:
+        return tokens
+    unique: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        if token not in seen:
+            seen.add(token)
+            unique.append(token)
+    return unique
+
+
 def parse_args(argv=None) -> CLIArgs:
     parser = argparse.ArgumentParser(description="SCIP Deep Context Extractor")
     parser.add_argument("--scip-file", required=True)
@@ -28,6 +44,11 @@ def parse_args(argv=None) -> CLIArgs:
     parser.add_argument("--project-modules", default="")
     parser.add_argument("--output-modules", default="",
         help="Comma-separated modules for Markdown output filtering (BFS unchanged)")
+    parser.add_argument("--output-symbol-prefix", default="",
+        help="Comma-separated descriptor prefixes for Markdown output filtering. "
+             "Uses string prefix matching on the SCIP descriptor part. "
+             "AND relation with --output-modules when both specified. "
+             "Use --raw-symbols to inspect actual descriptor formats.")
     parser.add_argument("--max-nodes", type=int, default=10)
     parser.add_argument("--timeout", type=float, default=3.0)
     parser.add_argument("--exclude-patterns", default="")
@@ -54,9 +75,10 @@ def parse_args(argv=None) -> CLIArgs:
     if has_single and (args.entry_file is None or args.entry_line is None):
         parser.error("--entry-file and --entry-line must be specified together")
 
-    modules = [m.strip() for m in args.project_modules.split(",") if m.strip()] if args.project_modules else []
-    output_modules = [m.strip() for m in args.output_modules.split(",") if m.strip()] if args.output_modules else []
-    user_patterns = [p.strip() for p in args.exclude_patterns.split(",") if p.strip()] if args.exclude_patterns else []
+    modules = _parse_csv(args.project_modules)
+    output_modules = _parse_csv(args.output_modules)
+    output_symbol_prefix = _parse_csv(args.output_symbol_prefix, dedup=True)
+    user_patterns = _parse_csv(args.exclude_patterns)
     if args.no_default_excludes:
         patterns = user_patterns
     else:
@@ -78,6 +100,7 @@ def parse_args(argv=None) -> CLIArgs:
         test_file_pattern=args.test_file_pattern,
         test_method_pattern=args.test_method_pattern,
         include_fields=args.include_fields,
+        output_symbol_prefix=output_symbol_prefix,
     )
 
 
@@ -112,6 +135,7 @@ def main(argv=None) -> int:
         dedup=args.dedup,
         raw_symbols=args.raw_symbols,
         output_modules=args.output_modules,
+        output_symbol_prefix=args.output_symbol_prefix,
     )
     sys.stdout.write(output)
 
@@ -171,6 +195,7 @@ def _batch_extract(args: CLIArgs) -> int:
             dedup=args.dedup,
             raw_symbols=args.raw_symbols,
             output_modules=args.output_modules,
+            output_symbol_prefix=args.output_symbol_prefix,
         )
         all_outputs.append(output)
 

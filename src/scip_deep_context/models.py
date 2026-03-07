@@ -96,6 +96,7 @@ class CLIArgs:
     test_method_pattern: Optional[str] = None
     include_fields: bool = False     # --include-fields: include field symbols in BFS
     output_modules: List[str] = field(default_factory=list)
+    output_symbol_prefix: List[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

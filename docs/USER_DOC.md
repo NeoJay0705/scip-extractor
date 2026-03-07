@@ -34,6 +34,7 @@ pip install -e ./scip-deep-context
 1. **環境要求**：Python 3.x 版本 + pip/npm
 2. **安裝 SCIP indexer**：`npm install -g @sourcegraph/scip-python`
 3. **建立索引**：`npx @sourcegraph/scip-python index .`（在專案根目錄執行）
+   > ⚠️ `scip-python` 支援 `--project-name` 參數指定專案名稱。此值會成為 SCIP package name，直接影響 Summary `### Modules` 顯示的模組名稱，以及 `--output-modules` 和 `--project-modules` 的匹配粒度。建議使用與 Python 頂層 package 名一致的值（如 `my_project`），或在首次提取後從 Summary 的 `### Modules` 列表確認實際的 package name。
 4. **驗證**：確認 `index.scip` 檔案已生成且 file size > 0
 
 #### Golang
@@ -80,7 +81,7 @@ pip install -e ./scip-deep-context
 | 想知道某測試覆蓋到哪些 production code | 分析「某測試覆蓋了哪些 production code」 | `scip-graph-query --coverage` | [情境 7](#情境-7查詢--測試覆蓋分析coverage)（⚠️ 目標應為測試函式） |
 | 需要一次看完整跨檔上下文 | 一次取得跨檔案完整上下文 | `scip-extract`（可搭配 `--graph-output`） | [情境 1](#情境-1提取函式的深層上下文markdown)、[情境 2](#情境-2提取函式的-call-graphjson) |
 | 有多個入口點結果，想整合後查詢 | 合併多個入口點的圖後再查詢 | `scip-graph-merge` + `scip-graph-query` | [情境 3](#情境-3合併多個-graph-json)、[情境 8](#情境-8端到端工作流程) |
-| 只想看特定模組的代碼上下文 | Markdown 僅輸出指定模組的代碼 | `scip-extract --output-modules` | [情境 14](#情境-14模組級輸出過濾--output-modules) |
+| 只想看特定模組/符號的代碼上下文 | 精確查詢特定分支或過濾 Markdown 輸出 | 優先 `scip-graph-query --with-source`；全量過濾用 `--output-modules`（多 package）或 `--output-symbol-prefix`（單 package） | [情境 14](#情境-14模組級輸出過濾--output-modules--output-symbol-prefix)、[情境 15](#情境-15查詢附帶源碼--with-source) |
 | 查詢呼叫鏈時想直接看源碼 | 查詢結果附帶源碼片段 | `scip-graph-query --with-source` | [情境 15](#情境-15查詢附帶源碼--with-source) |
 | 只需要找字串、設定值、log 或註解 | 搜尋字串、設定值、log 或註解文字 | `grep` | — |
 | 已知檔案路徑，只需快速閱讀片段 | 讀取已知路徑的檔案內容 | `view` | — |
@@ -90,7 +91,7 @@ pip install -e ./scip-deep-context
 ## 標準操作流程
 
 1. **前置**
-   - 確認已安裝 CLI 並完成 `index.scip` 建置；若源碼已變更，先重建索引再操作。
+   - 確認已安裝 CLI；檢查 `index.scip` 是否存在，不存在則依[前置作業](#建立-scip-索引)建索引；源碼有變更時，重建索引後再操作。
 
 2. **定位**
    - 先用 `grep/glob` 找到進入點的檔案與行號。函式定義行（`def`/`func`）與 body 行皆為有效進入點。
@@ -468,7 +469,7 @@ scip-graph-query --graph unified.json \
 ```
 
 **注意事項：**
-- 每次修改程式碼後需重新執行 `npx @sourcegraph/scip-python index .` 更新索引
+- 源碼有變更時，重建索引後再操作（重新執行對應語言的索引指令，如 `npx @sourcegraph/scip-python index .`）
 - 重新建立索引後，舊的 graph JSON 無法與新索引的 graph 合併（SCIP hash 不同）
 - `--graph-output` 會覆寫目標檔案，不會自動合併，需透過 `scip-graph-merge` 整合
 - node key 為 SCIP symbol 的 descriptor 部分，可用 `--raw-symbols` 查看完整 symbol 以確認 key 格式
@@ -687,15 +688,16 @@ scip-graph-merge layer1_graph.json layer2_graph.json -o combined_graph.json
 
 ---
 
-## 情境 14：模組級輸出過濾（`--output-modules`）
+## 情境 14：模組級輸出過濾（`--output-modules` / `--output-symbol-prefix`）
 
-> BFS 完整展開（Graph JSON 不受影響），但 Markdown 輸出僅包含指定模組的 code section。適用於大型專案中只關注特定模組上下文的場景。
+> BFS 完整展開（Graph JSON 不受影響），但 Markdown 輸出僅包含指定模組或 descriptor prefix 匹配的 code section。適用於大型專案中只關注特定模組或符號上下文的場景。
 
 **操作方式：** command line
 
 **操作前置作業：** 完成安裝 scip-deep-context 與建立 SCIP 索引
 
-**指令：**
+### 使用 `--output-modules`（按 SCIP package 過濾）
+
 ```bash
 scip-extract \
   --scip-file index.scip \
@@ -722,22 +724,91 @@ scip-extract \
   > myapp_utils.md
 ```
 
+### 使用 `--output-symbol-prefix`（按 descriptor prefix 過濾）
+
+```bash
+scip-extract \
+  --scip-file index.scip \
+  --project-root . \
+  --entry-file src/main.py \
+  --entry-line 10 \
+  --max-nodes 100 \
+  --output-symbol-prefix 'myapp/core' \
+  > core_only.md
+```
+
+多 prefix（逗號分隔，prefix 間 OR 關係）：
+
+```bash
+scip-extract \
+  --scip-file index.scip \
+  --project-root . \
+  --entry-file src/main.py \
+  --entry-line 10 \
+  --max-nodes 100 \
+  --output-symbol-prefix 'myapp/core,myapp/utils' \
+  > core_utils.md
+```
+
+### 組合使用（AND 關係）
+
+`--output-modules` 與 `--output-symbol-prefix` 並存時取交集（AND）——節點必須同時通過兩項過濾：
+
+```bash
+scip-extract \
+  --scip-file index.scip \
+  --project-root . \
+  --entry-file src/main.py \
+  --entry-line 10 \
+  --max-nodes 100 \
+  --output-modules myapp \
+  --output-symbol-prefix 'myapp/core' \
+  > filtered.md
+```
+
 **預期結果：**
-- Markdown 輸出僅包含匹配模組的 code section，frontmatter 新增 `rendered_nodes` 欄位（通過過濾後實際渲染的節點數）
-- `collected_nodes` 仍為 BFS 總數（不受 `--output-modules` 影響）
-- Graph JSON（`--graph-output`）保留完整 BFS 結果，不受 `--output-modules` 影響
+- Markdown 輸出僅包含通過過濾的 code section，frontmatter 新增 `rendered_nodes` 欄位（`--output-modules` 或 `--output-symbol-prefix` 任一啟用時出現）
+- `collected_nodes` 仍為 BFS 總數（不受輸出過濾影響）
+- Graph JSON（`--graph-output`）保留完整 BFS 結果，不受輸出過濾影響
 - Summary 區段仍基於完整 BFS 結果（Modules 列表顯示所有模組）
 - 無匹配時：frontmatter `rendered_nodes: 0` + Summary 區段 + 空正文（無 code section）
 - exit code 與情境 1 相同
 
-**`--output-modules` 與 `--project-modules` 的差異：**
+### 三種過濾參數的差異
 
-| 參數 | 作用階段 | 影響範圍 | 用途 |
-|------|---------|---------|------|
-| `--project-modules` | BFS 展開 | 限制 BFS 追蹤範圍（資料過濾） | 排除第三方套件 |
-| `--output-modules` | Markdown 渲染 | 限制 Markdown 輸出範圍（展示過濾） | 聚焦特定模組上下文 |
+| 參數 | 作用階段 | 影響範圍 | 匹配粒度 | 用途 |
+|------|---------|---------|---------|------|
+| `--project-modules` | BFS 展開 | 限制 BFS 追蹤範圍 + Graph JSON | SCIP package name | 排除第三方套件 |
+| `--output-modules` | Markdown 渲染 | 限制 Markdown 輸出範圍 | SCIP package name | 聚焦特定模組上下文 |
+| `--output-symbol-prefix` | Markdown 渲染 | 限制 Markdown 輸出範圍 | SCIP descriptor prefix | 細粒度符號過濾 |
 
-> ⚠️ **模組名稱為 SCIP package name**，非語言原生的 module path。例如 Python 專案中，模組名可能是 `scip-deep-context`（含連字符）而非 `scip_deep_context`（底線）。可先執行一次不帶 `--output-modules` 的提取，從 Summary 的 `### Modules` 列表確認正確的模組名稱。
+> ⚠️ **模組名稱為 SCIP package name**，非語言原生的 module path。例如 Python 專案中，模組名可能是 `scip-deep-context`（含連字符）而非 `scip_deep_context`（底線）。可先執行一次不帶過濾參數的提取，從 Summary 的 `### Modules` 列表確認正確的模組名稱。
+
+> ⚠️ **單一 SCIP package 限制**：對於單一 SCIP package 的專案（多數 Python 專案），所有代碼歸屬同一 package name。以下參數受影響：
+>
+> - **`--output-modules`**：無法做子模組過濾（結果為全選或全不選）
+> - **`--project-modules`**：同樣受限於 package 粒度，指定非 package name 的值會導致所有 symbol 被視為 external
+>
+> **替代方案**：
+> 1. 先執行一次不帶過濾的提取，從 Summary `### Modules` 確認 package name
+> 2. 若 package name 只有一個項目，改用 `--output-symbol-prefix` 做 descriptor-level 過濾
+> 3. 或改用 `scip-graph-query --forward-from` 搭配 `--max-depth` 和 `--with-source` 精確查詢特定分支
+
+### 大型上下文閱讀策略
+
+當 `scip-extract` 輸出的 Markdown 上下文過大時，建議依以下優先順序選擇策略：
+
+1. **`scip-graph-query --with-source`（推薦）**：按需查詢特定分支並附帶源碼，精確且輕量
+   ```bash
+   scip-graph-query --graph graph.json \
+     --forward-from '*target().' --max-depth 1 --with-source --project-root .
+   ```
+2. **`grep` + `view`**：在已產出的 Markdown 中快速定位目標節點
+   ```bash
+   grep "^### " context.md    # 列出所有 section header
+   ```
+3. **`--output-modules`**（條件性）：僅當 Summary `### Modules` 顯示多個 SCIP package 時有效
+4. **`--output-symbol-prefix`**：以 descriptor prefix 做細粒度過濾，適用於單 package 或需精確控制輸出範圍的場景
 
 ---
 
@@ -833,6 +904,7 @@ def run(self):
 | 條件 | 行為 |
 |------|------|
 | `index.scip` 不存在 | 先依[前置作業](#建立-scip-索引)建索引；未建索引前使用 `grep/view` |
+| 源碼變更後未重建 `index.scip` | 符號與行號可能錯位，重建索引後再操作 |
 | CLI 工具不可用 | 改用 `grep/view` 完成文字層級定位與閱讀 |
 | 進入點定位失敗（exit code 非 0） | 優先改用函式定義行（`def`/`func`）或含函式呼叫的 body 行重試；仍失敗則改用 `grep/view` |
 | 錯誤訊息 `Only local symbols found` | 行號指向的行僅含 local variable 賦值（如 `x = foo()` 中的 `x`），無 function-level symbol。改用函式定義行（`def`/`func`）或含函式呼叫的行作為進入點 |
@@ -871,12 +943,13 @@ def run(self):
 | `--no-default-excludes` | flag | | false | 停用預設排除 pattern（如 `local *`） | 情境 10 |
 | `--test-file-pattern` | string | | — | 批次 extract：模糊搜尋測試檔名（glob pattern） | 情境 9 |
 | `--test-method-pattern` | string | | — | 批次 extract：模糊搜尋測試方法名（glob pattern） | 情境 9 |
-| `--project-modules` | string | | `""` | 專案模組名稱，逗號分隔（用於內外部判定） | 情境 12 |
+| `--project-modules` | string | | `""` | 專案模組名稱，逗號分隔（用於 BFS 內外部判定）。⚠️ 單 package 專案中受限於 package 粒度 | 情境 12 |
 | `--no-dedup` | flag | | false | 停用 containment dedup（同時影響 Markdown 和 Graph JSON），輸出所有收集到的區塊 | 情境 11 |
 | `--raw-symbols` | flag | | false | section header 顯示完整 SCIP symbol（預設只顯示 descriptor） | 情境 11 |
 | `--graph-output` | string | | — | 同時輸出 call graph JSON 到指定路徑 | 情境 2, 8, 13, 14 |
 | `--include-fields` | flag | | false | 在 BFS 中包含 field/property symbols（預設排除） | 情境 10 |
-| `--output-modules` | string | | `""` | 逗號分隔的模組名稱（SCIP package name），僅過濾 Markdown 輸出（BFS 與 Graph JSON 不受影響）；啟用時 frontmatter 新增 `rendered_nodes` 欄位 | 情境 14 |
+| `--output-modules` | string | | `""` | 逗號分隔的模組名稱（SCIP package name），僅過濾 Markdown 輸出（BFS 與 Graph JSON 不受影響）；啟用時 frontmatter 新增 `rendered_nodes` 欄位。⚠️ 單 package 專案中為全選或全不選 | 情境 14 |
+| `--output-symbol-prefix` | string | | `""` | 逗號分隔的 descriptor prefix 列表，僅過濾 Markdown 輸出（BFS 與 Graph JSON 不受影響）；prefix 間 OR、與 `--output-modules` 為 AND 關係；啟用時 frontmatter 新增 `rendered_nodes` 欄位 | 情境 14 |
 | `--version` | flag | | — | 顯示版本號 | — |
 
 > ⚠️ `--entry-file` / `--entry-line` 與 `--test-file-pattern` / `--test-method-pattern` 為互斥模式：前者用於單一進入點提取（情境 1, 2, 10, 11, 12, 13, 14），後者用於批次測試提取（情境 9）。兩者不可同時使用。
