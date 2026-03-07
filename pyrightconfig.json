@@ -1,0 +1,13 @@
+{
+    "include": [
+        "src/scip_deep_context"
+    ],
+    "exclude": [
+        ".venv",
+        "**/.*",
+        "**/node_modules",
+        "**/__pycache__",
+        ".git"
+    ],
+    "ignore": []
+}
