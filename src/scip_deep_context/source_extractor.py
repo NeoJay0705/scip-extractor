@@ -111,6 +111,25 @@ def extract_source(
     )
 
 
+def read_source_by_range(
+    project_root: str,
+    file_path: str,
+    start_line: int,
+    end_line: int,
+) -> str:
+    """Read source code by line range (1-based, inclusive)."""
+    abs_path = os.path.join(project_root, file_path)
+    safe_start = max(1, start_line)
+    safe_end = max(safe_start, end_line)
+    try:
+        with open(abs_path, encoding="utf-8") as f:
+            lines = f.readlines()
+    except (FileNotFoundError, OSError):
+        return f"# Source not available: {file_path}"
+
+    return "".join(lines[safe_start - 1:safe_end]).rstrip("\n")
+
+
 def _lang_from_ext(file_path: str) -> str:
     """從檔案副檔名推斷語言。"""
     ext = os.path.splitext(file_path)[1].lower()

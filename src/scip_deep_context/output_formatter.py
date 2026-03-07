@@ -7,6 +7,8 @@ from typing import List, Optional
 import yaml
 
 from scip_deep_context.models import CodeBlock, GraphEdge, OutputMetadata, TraversalResult
+from scip_deep_context.source_extractor import read_source_by_range
+from scip_deep_context.symbol_filter import match_module_patterns, parse_package
 
 
 def _extract_descriptor(symbol: str) -> str:
@@ -114,19 +116,37 @@ def format_output(
     *,
     dedup: bool = True,
     raw_symbols: bool = False,
+    output_modules: Optional[list[str]] = None,
 ) -> str:
     all_blocks = _collect_all_blocks(result)
 
-    filtered_blocks = _remove_contained_blocks(all_blocks, dedup_enabled=dedup)
-    filtered_symbols = {b.symbol for b in filtered_blocks}
+    deduped_blocks = _remove_contained_blocks(all_blocks, dedup_enabled=dedup)
+    deduped_symbols = {b.symbol for b in deduped_blocks}
 
     # Only override collected_nodes when dedup actually removed blocks
-    rendered_count = len(filtered_blocks) if len(filtered_blocks) != len(all_blocks) else None
+    rendered_count = len(deduped_blocks) if len(deduped_blocks) != len(all_blocks) else None
 
-    meta = _build_metadata(result, max_nodes, rendered_count=rendered_count)
+    rendered_nodes: Optional[int] = None
+    if output_modules:
+        filtered_blocks = [
+            block for block in deduped_blocks
+            if _matches_output_modules(block.symbol, output_modules)
+        ]
+        filtered_symbols = {b.symbol for b in filtered_blocks}
+        rendered_nodes = len(filtered_blocks)
+    else:
+        filtered_symbols = deduped_symbols
+
+    meta = _build_metadata(
+        result,
+        max_nodes,
+        rendered_count=rendered_count,
+        rendered_nodes=rendered_nodes,
+    )
     yaml_part = _render_yaml_frontmatter(meta)
+    summary_part = _render_summary(result, deduped_symbols, raw_symbols=raw_symbols)
     md_part = _render_markdown(result, kept_symbols=filtered_symbols, raw_symbols=raw_symbols)
-    return yaml_part + md_part
+    return yaml_part + summary_part + md_part
 
 
 def format_graph_json(
@@ -205,6 +225,7 @@ def _build_metadata(
     max_nodes: int,
     *,
     rendered_count: int | None = None,
+    rendered_nodes: int | None = None,
 ) -> OutputMetadata:
     return OutputMetadata(
         duration_sec=result.duration_sec,
@@ -213,6 +234,7 @@ def _build_metadata(
         is_truncated=result.is_truncated,
         truncation_reasons=list(result.truncation_reasons),
         alerts_count=len(result.broken_links),
+        rendered_nodes=rendered_nodes,
     )
 
 
@@ -225,7 +247,68 @@ def _render_yaml_frontmatter(meta: OutputMetadata) -> str:
         "truncation_reasons": meta.truncation_reasons,
         "alerts_count": meta.alerts_count,
     }
+    if meta.rendered_nodes is not None:
+        data["rendered_nodes"] = meta.rendered_nodes
     return "---\n" + yaml.dump(data, default_flow_style=False, sort_keys=False) + "---\n"
+
+
+def _matches_output_modules(symbol: str, output_modules: list[str]) -> bool:
+    pkg = parse_package(symbol)
+    if not pkg:
+        return False
+    return match_module_patterns(pkg, output_modules)
+
+
+def _render_summary(
+    result: TraversalResult,
+    kept_symbols: set[str],
+    *,
+    raw_symbols: bool = False,
+) -> str:
+    parts: list[str] = ["\n## Summary\n"]
+
+    module_counts: dict[str, int] = {}
+    for symbol in sorted(kept_symbols):
+        pkg = parse_package(symbol)
+        if not pkg:
+            continue
+        module_counts[pkg] = module_counts.get(pkg, 0) + 1
+
+    parts.append("\n### Modules\n")
+    if module_counts:
+        for module in sorted(module_counts):
+            parts.append(f"- `{module}`: {module_counts[module]}\n")
+    else:
+        parts.append("- (none)\n")
+
+    layer_counts: dict[int, int] = {}
+    for layer in sorted(result.layers.keys()):
+        count = sum(1 for block in result.layers[layer] if block.symbol in kept_symbols)
+        layer_counts[layer] = count
+
+    parts.append("\n### Layer Distribution\n")
+    for layer in sorted(layer_counts):
+        if layer_counts[layer] == 0:
+            continue
+        parts.append(f"- Layer {layer}: {layer_counts[layer]}\n")
+
+    if result.pending_symbols:
+        parts.append("\n### Truncated Branches\n")
+        unique_pending: list[str] = []
+        seen: set[str] = set()
+        for symbol in result.pending_symbols:
+            if symbol in seen:
+                continue
+            seen.add(symbol)
+            unique_pending.append(symbol)
+        display = unique_pending[:10]
+        for symbol in display:
+            label = symbol if raw_symbols else _extract_descriptor(symbol)
+            parts.append(f"- `{label}`\n")
+        if len(unique_pending) > 10:
+            parts.append(f"- ... and {len(unique_pending) - 10} more\n")
+
+    return "".join(parts)
 
 
 def _render_markdown(
@@ -268,4 +351,34 @@ def _render_markdown(
                 parts.append(f" — `{link.code_snippet}`")
             parts.append("\n")
 
+    return "".join(parts)
+
+
+def format_query_markdown(
+    query_result: dict,
+    query_type: str,
+    entry_node: str,
+    project_root: str,
+) -> str:
+    nodes = query_result.get("nodes", {})
+    data = {
+        "query_type": query_type,
+        "entry_node": entry_node,
+        "result_nodes": len(nodes),
+        "is_truncated": bool(query_result.get("is_truncated", False)),
+    }
+
+    parts: list[str] = ["---\n", yaml.dump(data, default_flow_style=False, sort_keys=False), "---\n"]
+    parts.append("\n## Query Result\n")
+    for symbol in sorted(nodes.keys()):
+        node_meta = nodes[symbol]
+        file_path = node_meta.get("file", "")
+        lines = node_meta.get("lines", [0, 0])
+        start_line = int(lines[0]) if len(lines) > 0 else 0
+        end_line = int(lines[1]) if len(lines) > 1 else start_line
+        source = read_source_by_range(project_root, file_path, start_line, end_line)
+        parts.append(f"\n### {symbol}\n")
+        parts.append(f"`{file_path}` L{start_line}-L{end_line}\n")
+        lang = _detect_language(symbol, file_path)
+        parts.append(f"\n```{lang}\n{source}\n```\n")
     return "".join(parts)

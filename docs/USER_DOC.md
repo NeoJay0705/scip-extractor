@@ -80,6 +80,8 @@ pip install -e ./scip-deep-context
 | 想知道某測試覆蓋到哪些 production code | 分析「某測試覆蓋了哪些 production code」 | `scip-graph-query --coverage` | [情境 7](#情境-7查詢--測試覆蓋分析coverage) |
 | 需要一次看完整跨檔上下文 | 一次取得跨檔案完整上下文 | `scip-extract`（可搭配 `--graph-output`） | [情境 1](#情境-1提取函式的深層上下文markdown)、[情境 2](#情境-2提取函式的-call-graphjson) |
 | 有多個入口點結果，想整合後查詢 | 合併多個入口點的圖後再查詢 | `scip-graph-merge` + `scip-graph-query` | [情境 3](#情境-3合併多個-graph-json)、[情境 8](#情境-8端到端工作流程) |
+| 只想看特定模組的代碼上下文 | Markdown 僅輸出指定模組的代碼 | `scip-extract --output-modules` | [情境 14](#情境-14模組級輸出過濾--output-modules) |
+| 查詢呼叫鏈時想直接看源碼 | 查詢結果附帶源碼片段 | `scip-graph-query --with-source` | [情境 15](#情境-15查詢附帶源碼--with-source) |
 | 只需要找字串、設定值、log 或註解 | 搜尋字串、設定值、log 或註解文字 | `grep` | — |
 | 已知檔案路徑，只需快速閱讀片段 | 讀取已知路徑的檔案內容 | `view` | — |
 | 先想知道專案有哪些檔案 | 快速查看目錄與檔案結構 | `glob` | — |
@@ -131,6 +133,11 @@ scip-extract \
 
 **預期結果：**
 - stdout 輸出 Markdown 格式的深層上下文
+- Markdown 開頭為 YAML frontmatter，包含 `collected_nodes`、`max_nodes`、`is_truncated`、`truncation_reasons`（截斷原因列表）、`duration_sec` 等欄位
+- frontmatter 之後、Layer 0 代碼區段之前，插入 `## Summary` 區段，包含：
+  - `### Modules`：各模組（SCIP package name）的節點數
+  - `### Layer Distribution`：各 BFS layer 的節點數（0-count layer 跳過）
+  - `### Truncated Branches`：僅截斷時出現，列出被丟棄的 pending symbols（去重後最多 10 個，超過顯示 `... and N more`）
 - BFS 結果預設僅含 function/method/constructor 節點；parameter symbols（`method().(param)` 格式）及 field/property symbols 均排除（field 可透過 `--include-fields` 包含）
 - exit code 0：成功
 - exit code 1：有 broken links（仍產出結果）
@@ -347,6 +354,8 @@ scip-graph-query \
 - `nodes`：符合條件的節點（不含起點本身）
 - `is_truncated`：`true` 表示 BFS 在 `max_depth` 處截斷，可能有更多節點
 - 若 truncated，stderr 輸出警告訊息
+
+> 💡 若需在查詢結果中直接查看源碼，可加上 `--with-source --project-root .`，輸出將從 JSON 切換為 Markdown 並附帶 code fence。詳見[情境 15](#情境-15查詢附帶源碼--with-source)。
 
 ---
 
@@ -661,6 +670,115 @@ scip-graph-merge layer1_graph.json layer2_graph.json -o combined_graph.json
 
 ---
 
+## 情境 14：模組級輸出過濾（`--output-modules`）
+
+> BFS 完整展開（Graph JSON 不受影響），但 Markdown 輸出僅包含指定模組的 code section。適用於大型專案中只關注特定模組上下文的場景。
+
+**操作方式：** command line
+
+**操作前置作業：** 完成安裝 scip-deep-context 與建立 SCIP 索引
+
+**指令：**
+```bash
+scip-extract \
+  --scip-file index.scip \
+  --project-root . \
+  --entry-file src/main.py \
+  --entry-line 10 \
+  --max-nodes 100 \
+  --timeout 20 \
+  --output-modules myapp \
+  --graph-output full_graph.json \
+  > myapp_only.md
+```
+
+多模組（逗號分隔）：
+
+```bash
+scip-extract \
+  --scip-file index.scip \
+  --project-root . \
+  --entry-file src/main.py \
+  --entry-line 10 \
+  --max-nodes 100 \
+  --output-modules myapp,utils \
+  > myapp_utils.md
+```
+
+**預期結果：**
+- Markdown 輸出僅包含匹配模組的 code section，frontmatter 新增 `rendered_nodes` 欄位（通過過濾後實際渲染的節點數）
+- `collected_nodes` 仍為 BFS 總數（不受 `--output-modules` 影響）
+- Graph JSON（`--graph-output`）保留完整 BFS 結果，不受 `--output-modules` 影響
+- Summary 區段仍基於完整 BFS 結果（Modules 列表顯示所有模組）
+- 無匹配時：frontmatter `rendered_nodes: 0` + Summary 區段 + 空正文（無 code section）
+- exit code 與情境 1 相同
+
+**`--output-modules` 與 `--project-modules` 的差異：**
+
+| 參數 | 作用階段 | 影響範圍 | 用途 |
+|------|---------|---------|------|
+| `--project-modules` | BFS 展開 | 限制 BFS 追蹤範圍（資料過濾） | 排除第三方套件 |
+| `--output-modules` | Markdown 渲染 | 限制 Markdown 輸出範圍（展示過濾） | 聚焦特定模組上下文 |
+
+> ⚠️ **模組名稱為 SCIP package name**，非語言原生的 module path。例如 Python 專案中，模組名可能是 `scip-deep-context`（含連字符）而非 `scip_deep_context`（底線）。可先執行一次不帶 `--output-modules` 的提取，從 Summary 的 `### Modules` 列表確認正確的模組名稱。
+
+---
+
+## 情境 15：查詢附帶源碼（`--with-source`）
+
+> 查詢 call graph 時一次取得源碼片段，免除逐一 `view` 檔案的步驟。啟用後輸出從 JSON 切換為 Markdown。
+
+**操作方式：** command line
+
+**操作前置作業：** 透過情境 2 或情境 3 產出 graph JSON
+
+**指令：**
+```bash
+scip-graph-query \
+  --graph unified_graph.json \
+  --forward-from 'main().' \
+  --max-depth 3 \
+  --with-source \
+  --project-root .
+```
+
+**參數說明：**
+
+| 參數 | 必要 | 說明 |
+|------|:----:|------|
+| `--with-source` | | 啟用源碼附帶模式（輸出切換為 Markdown） |
+| `--project-root` | ⚠️ | 源碼根目錄路徑（`--with-source` 啟用時必填） |
+
+**預期結果（stdout Markdown）：**
+```markdown
+---
+query_type: forward_from
+entry_node: "main()."
+result_nodes: 5
+is_truncated: false
+---
+
+## Query Result
+
+### BacktestEngine#run().
+`quant_factory/backtest.py` L100-L150
+
+```python
+def run(self):
+    ...
+```
+```
+
+- 輸出格式從 JSON 切換為 Markdown，包含 YAML frontmatter + `## Query Result` 區段
+- 每個節點附帶 code fence（自動偵測語言）
+- frontmatter 包含 `query_type`、`entry_node`、`result_nodes`、`is_truncated`
+- 不帶 `--with-source` 時仍輸出 JSON（行為不變）
+- `--with-source` 與 `--list-nodes` 互斥
+
+**使用場景：** Agent 工作流中，需要查詢結果同時包含源碼上下文，一次取得可直接閱讀的完整資訊。
+
+---
+
 ## 工具分工：SCIP CLI 與 grep/view
 
 ### SCIP CLI 的不可替代場景
@@ -692,6 +810,7 @@ scip-graph-merge layer1_graph.json layer2_graph.json -o combined_graph.json
 | 錯誤訊息 `Only local symbols found` | 行號指向的行僅含 local variable 賦值（如 `x = foo()` 中的 `x`），無 function-level symbol。改用函式定義行（`def`/`func`）或含函式呼叫的行作為進入點 |
 | Markdown frontmatter 顯示 `collected_nodes: 1` | 視為 BFS 未展開，優先檢查行號與符號定位，再重新提取 |
 | Query 結果 `is_truncated: true` | 調整 `--max-depth` 或改以較小範圍分段查詢，避免直接依截斷結果下結論 |
+| Markdown frontmatter `is_truncated: true` | 參考 Summary 的 `### Truncated Branches` 列表了解被截斷的分支，再以截斷分支為新 entry point 進行分層探索（[情境 13](#情境-13分層探索--迭代式深層上下文提取)） |
 | 需求是非代碼文字搜尋 | 直接使用 `grep`，不走 SCIP query 流程 |
 
 ## 關鍵注意事項
@@ -724,11 +843,12 @@ scip-graph-merge layer1_graph.json layer2_graph.json -o combined_graph.json
 | `--project-modules` | string | | `""` | 專案模組名稱，逗號分隔（用於內外部判定） | 情境 12 |
 | `--no-dedup` | flag | | false | 停用 containment dedup（同時影響 Markdown 和 Graph JSON），輸出所有收集到的區塊 | 情境 11 |
 | `--raw-symbols` | flag | | false | section header 顯示完整 SCIP symbol（預設只顯示 descriptor） | 情境 11 |
-| `--graph-output` | string | | — | 同時輸出 call graph JSON 到指定路徑 | 情境 2, 8, 13 |
+| `--graph-output` | string | | — | 同時輸出 call graph JSON 到指定路徑 | 情境 2, 8, 13, 14 |
 | `--include-fields` | flag | | false | 在 BFS 中包含 field/property symbols（預設排除） | 情境 10 |
+| `--output-modules` | string | | `""` | 逗號分隔的模組名稱（SCIP package name），僅過濾 Markdown 輸出（BFS 與 Graph JSON 不受影響）；啟用時 frontmatter 新增 `rendered_nodes` 欄位 | 情境 14 |
 | `--version` | flag | | — | 顯示版本號 | — |
 
-> ⚠️ `--entry-file` / `--entry-line` 與 `--test-file-pattern` / `--test-method-pattern` 為互斥模式：前者用於單一進入點提取（情境 1, 2, 10, 11, 12, 13），後者用於批次測試提取（情境 9）。兩者不可同時使用。
+> ⚠️ `--entry-file` / `--entry-line` 與 `--test-file-pattern` / `--test-method-pattern` 為互斥模式：前者用於單一進入點提取（情境 1, 2, 10, 11, 12, 13, 14），後者用於批次測試提取（情境 9）。兩者不可同時使用。
 
 **scip-graph-merge 參數**
 
@@ -741,12 +861,15 @@ scip-graph-merge layer1_graph.json layer2_graph.json -o combined_graph.json
 
 | 參數 | 類型 | 必要 | 預設值 | 說明 | 使用情境 |
 |------|------|:----:|--------|------|---------|
-| `--graph` | string | ✅ | — | graph JSON 路徑（單一或合併後皆可） | 情境 4-7 |
-| `--max-depth` | integer | | 10 | 最大追蹤深度 | 情境 4-7 |
-| `--forward-from` | string | ✅* | — | Q1：正向查詢的起點 node key（支援 glob） | 情境 4 |
+| `--graph` | string | ✅ | — | graph JSON 路徑（單一或合併後皆可） | 情境 4-7, 15 |
+| `--max-depth` | integer | | 10 | 最大追蹤深度 | 情境 4-7, 15 |
+| `--forward-from` | string | ✅* | — | Q1：正向查詢的起點 node key（支援 glob） | 情境 4, 15 |
 | `--reverse-from` | string | ✅* | — | Q2：反向查詢的起點 node key（支援 glob） | 情境 5 |
 | `--test-impact` | string | ✅* | — | Q3：影響分析的目標 node key（支援 glob） | 情境 6 |
 | `--coverage` | string | ✅* | — | Q4：覆蓋分析的測試 node key（支援 glob） | 情境 7 |
 | `--list-nodes` | flag | ✅* | — | 列出 graph 中所有 node key | 情境 8 |
+| `--with-source` | flag | | false | 啟用源碼附帶模式（輸出從 JSON 切換為 Markdown）；與 `--list-nodes` 互斥 | 情境 15 |
+| `--project-root` | string | ⚠️ | — | 源碼根目錄路徑（`--with-source` 啟用時必填） | 情境 15 |
 
-> *五種查詢模式互斥，必須指定其中一種。
+> *五種查詢模式互斥，必須指定其中一種。  
+> ⚠️ `--with-source` 與 `--list-nodes` 互斥。`--with-source` 啟用時 `--project-root` 為必填。

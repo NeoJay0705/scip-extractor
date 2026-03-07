@@ -280,6 +280,9 @@ def traverse(
             # Record child node metadata
             result.node_metadata[child_sym] = _build_node_meta(child_block, next_layer, child_info)
 
+    if result.is_truncated:
+        result.pending_symbols = [sym for sym, _layer in queue]
+
     # Sort blocks within each layer by symbol name
     for layer in result.layers:
         result.layers[layer] = sorted(

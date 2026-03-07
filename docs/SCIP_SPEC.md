@@ -75,11 +75,12 @@
 | `--raw-symbols` | flag | | false | section header 顯示完整 SCIP symbol |
 | `--graph-output` | string | | — | 輸出路徑；覆寫現有檔案 |
 | `--include-fields` | flag | | false | 在 BFS 中包含 field/property symbols（預設排除） |
+| `--output-modules` | string | | `""` | 逗號分隔的模組名稱，僅過濾 Markdown 輸出（BFS 與 Graph JSON 不受影響）。模組名稱為 SCIP package name（非語言原生 module path） |
 | `--version` | flag | | — | 顯示版本號 |
 
 > † **進入點模式**：`--entry-file` + `--entry-line` 必須同時出現。  
 > ‡ **批次模式**：`--test-file-pattern` 和/或 `--test-method-pattern`。  
-> **兩種模式互斥**，必須且只能使用其中一種。關聯情境：進入點模式（情境 1, 2, 10, 11, 12, 13）、批次模式（情境 9）。
+> **兩種模式互斥**，必須且只能使用其中一種。關聯情境：進入點模式（情境 1, 2, 10, 11, 12, 13, 14）、批次模式（情境 9）。
 
 **原因**：兩種模式的 BFS 起點取得方式不同——進入點模式從單一 symbol 開始，批次模式從 pattern 匹配的多個測試 symbol 開始。合併兩者會造成語義模糊。
 
@@ -141,6 +142,15 @@
 | `--coverage` | string | ✅* | — | 支援 glob pattern |
 
 > *五種查詢模式互斥，必須指定其中一種。
+
+**附加參數：**
+
+| 參數 | 類型 | 必要 | 預設值 | 約束 |
+|------|------|:----:|--------|------|
+| `--with-source` | flag | | false | 啟用時輸出從 JSON 切換為 Markdown（附帶源碼片段）；與 `--list-nodes` 互斥 |
+| `--project-root` | string | ⚠️ | — | 源碼根目錄路徑；`--with-source` 啟用時必填 |
+
+> ⚠️ `--with-source` 與 `--list-nodes` 互斥，同時啟用時 argparse 報錯。`--with-source` 可與 `--forward-from`、`--reverse-from`、`--test-impact`、`--coverage` 四種查詢模式搭配。
 
 #### 查詢行為
 
@@ -225,7 +235,11 @@
 
 **與單一 Graph 的差異**：合併後 `metadata` 中 `entry_file`/`entry_line`/`entry_symbol` 被 `sources` 陣列取代；節點的 `layer` 被 `source_layers` dict 取代。
 
-### 4.3 Query 輸出 JSON
+### 4.3 Query 輸出格式
+
+#### 4.3.1 預設 JSON 輸出
+
+不啟用 `--with-source` 時，輸出 JSON（維持既有契約）：
 
 ```json
 {
@@ -237,14 +251,80 @@
 - `nodes`：符合條件的節點（不含起點本身）
 - `is_truncated`：`true` 表示 BFS 在 `max_depth` 處截斷
 
+#### 4.3.2 With-source Markdown 輸出（條件模式）
+
+啟用 `--with-source` 時，輸出切換為 Markdown，格式與 `scip-extract` 輸出風格一致：
+
+```markdown
+---
+query_type: forward_from
+entry_node: "main()."
+result_nodes: 5
+is_truncated: false
+---
+
+## Query Result
+
+### BacktestEngine#run().
+`quant_factory/backtest.py` L100-L150
+
+```python
+def run(self):
+    ...
+```
+```
+
+**frontmatter 欄位**：
+
+| 欄位 | 說明 |
+|------|------|
+| `query_type` | 查詢類型（`forward_from` / `reverse_from` / `test_impact` / `coverage`） |
+| `entry_node` | 查詢起點 node key |
+| `result_nodes` | 結果節點數 |
+| `is_truncated` | 是否截斷 |
+
+**原因**：`--with-source` 為條件式輸出模式切換——預設不改變 JSON 行為，啟用時為 Agent 提供可直接閱讀的 Markdown 上下文，消除逐一 `view` 源檔的步驟。關聯情境：情境 15。
+
 ### 4.4 Markdown 輸出格式
 
 - 開頭為 YAML frontmatter（`---` 分隔），包含：
-  - `collected_nodes`：收集到的節點數
+  - `collected_nodes`：收集到的節點數（BFS 總數，不受 `--output-modules` 影響）
   - `max_nodes`：BFS 最大展開節點數（對應 `--max-nodes` 參數值）
-  - `is_truncated`：是否因 max_nodes 而截斷
+  - `is_truncated`：是否因 max_nodes 或 timeout 而截斷
+  - `truncation_reasons`：截斷原因列表（如 `["max_nodes"]`、`["timeout"]`），未截斷時為空陣列
   - `duration_sec`：執行耗時
+  - `rendered_nodes`：通過 `--output-modules` 過濾後實際渲染的節點數（僅 `--output-modules` 啟用時出現）
+- frontmatter 之後、Layer 0 代碼區段之前，插入 `## Summary` 區段（見下方格式）
 - 主體為 code section，每個 section 對應一個被追蹤到的 symbol
+
+#### Summary 區段格式
+
+```markdown
+## Summary
+
+### Modules
+- `myapp`: 15
+- `utils`: 8
+
+### Layer Distribution
+- Layer 0: 1
+- Layer 1: 7
+- Layer 2: 12
+- Layer 3: 3
+
+### Truncated Branches
+- `BacktestEngine#run().`
+- `DataLoader#load().`
+- ... and 5 more
+```
+
+| 子區段 | 必要性 | 說明 |
+|--------|:------:|------|
+| `### Modules` | 必要 | 各 SCIP package 的節點數（依 `parse_package()` 提取模組名） |
+| `### Layer Distribution` | 必要 | 各 BFS layer 的非零節點數（0-count layer 跳過） |
+| `### Truncated Branches` | 條件必要 | 僅截斷時出現；列出去重後的 pending symbols（最多 10 個，超過顯示 `... and N more`） |
+
+**原因**：Summary 區段提供人類可讀的結構化摘要，與 frontmatter 的機器可解析欄位互補。Agent 可從 Modules 列表確認 `--output-modules` 或 `--project-modules` 的正確值，從 Truncated Branches 選擇下一個分層探索目標。關聯情境：情境 1、13、14。
 
 ### 4.5 向後相容性聲明
 
@@ -273,6 +353,24 @@
 
 **Migration Note**：若下游系統曾依賴 parameter node key（如 `module/method().(param_name)`）進行查詢，需移除此類查詢——parameter 資訊已包含於父方法的代碼片段中，不再作為獨立節點暴露。
 
+**Summary 區段與 Frontmatter 擴充（v0.6.0 加法變更）**：
+
+- **`truncation_reasons` 欄位**：frontmatter 新增截斷原因列表，未讀取此欄位的既有程式碼可安全忽略
+- **`rendered_nodes` 欄位**：frontmatter 新增條件欄位（僅 `--output-modules` 啟用時出現），不影響既有 frontmatter 解析
+- **`## Summary` 區段**：在 frontmatter 後插入新的 Markdown 區段，不改變既有 code section 結構
+- **`pending_symbols`**：`TraversalResult` 新增欄位，加法變更，不影響既有 API
+
+**`--with-source` 條件式輸出（v0.6.0）**：
+
+- **預設行為不變**：`scip-graph-query` 不帶 `--with-source` 時仍輸出 JSON，完全向後相容
+- **新模式**：`--with-source` 為顯式 opt-in，啟用時輸出切換為 Markdown
+- **`--project-root` 條件必要**：僅 `--with-source` 啟用時必填，不影響既有查詢
+
+**`--output-modules` 輸出過濾（v0.6.0）**：
+
+- **BFS 與 Graph JSON 不受影響**：`--output-modules` 僅控制 Markdown 輸出展示範圍
+- **不帶此參數時行為不變**：全部節點渲染至 Markdown（與既有行為一致）
+
 ---
 
 ## 五、Agent Skill 介面契約
@@ -283,8 +381,8 @@
 
 | Skill | CLI 指令 | 輸出格式 | 關聯情境 |
 |-------|---------|---------|---------|
-| `scip-extract` | `scip-extract` | Markdown (stdout) + JSON (file) | 情境 1, 2, 8-13 |
-| `scip-graph-query` | `scip-graph-query` | JSON (stdout) | 情境 4-7 |
+| `scip-extract` | `scip-extract` | Markdown (stdout) + JSON (file) | 情境 1, 2, 8-14 |
+| `scip-graph-query` | `scip-graph-query` | JSON (stdout) / Markdown (`--with-source`) | 情境 4-7, 15 |
 | `scip-graph-merge` | `scip-graph-merge` | JSON (file) | 情境 3, 8 |
 
 ### 5.2 Schema 驗證
@@ -327,6 +425,8 @@
 | 11 | Dedup 控制與 Raw Symbols | scip-extract | §3.1 |
 | 12 | 多模組 Symbol 過濾 | scip-extract | §3.1 |
 | 13 | 分層探索 — 迭代式深層上下文提取 | scip-extract, scip-graph-merge | §3.1, §3.2, §4.1, §4.2 |
+| 14 | 模組級輸出過濾 | scip-extract | §3.1, §4.4 |
+| 15 | 查詢附帶源碼 | scip-graph-query | §3.3, §4.3 |
 
 ---
 

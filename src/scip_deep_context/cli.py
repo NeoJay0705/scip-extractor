@@ -26,6 +26,8 @@ def parse_args(argv=None) -> CLIArgs:
     parser.add_argument("--test-method-pattern", default=None,
         help="Glob pattern to match test method names for batch extract")
     parser.add_argument("--project-modules", default="")
+    parser.add_argument("--output-modules", default="",
+        help="Comma-separated modules for Markdown output filtering (BFS unchanged)")
     parser.add_argument("--max-nodes", type=int, default=10)
     parser.add_argument("--timeout", type=float, default=3.0)
     parser.add_argument("--exclude-patterns", default="")
@@ -39,7 +41,7 @@ def parse_args(argv=None) -> CLIArgs:
         help="Write call graph to JSON file at the given path")
     parser.add_argument("--include-fields", action="store_true", default=False,
         help="Include field/property symbols in BFS traversal (default: excluded)")
-    parser.add_argument("--version", action="version", version="%(prog)s 0.5.0")
+    parser.add_argument("--version", action="version", version="%(prog)s 0.7.0")
     args = parser.parse_args(argv)
 
     # 互斥驗證：single entry vs batch test
@@ -53,6 +55,7 @@ def parse_args(argv=None) -> CLIArgs:
         parser.error("--entry-file and --entry-line must be specified together")
 
     modules = [m.strip() for m in args.project_modules.split(",") if m.strip()] if args.project_modules else []
+    output_modules = [m.strip() for m in args.output_modules.split(",") if m.strip()] if args.output_modules else []
     user_patterns = [p.strip() for p in args.exclude_patterns.split(",") if p.strip()] if args.exclude_patterns else []
     if args.no_default_excludes:
         patterns = user_patterns
@@ -65,6 +68,7 @@ def parse_args(argv=None) -> CLIArgs:
         entry_file=args.entry_file,
         entry_line=args.entry_line,
         project_modules=modules,
+        output_modules=output_modules,
         max_nodes=args.max_nodes,
         timeout=args.timeout,
         exclude_patterns=patterns,
@@ -102,7 +106,13 @@ def main(argv=None) -> int:
     sf = SymbolFilter(args.project_modules, args.project_root, args.exclude_patterns)
     result = traverse(entry_symbol, symbol_table, sf, args.project_root, args.max_nodes, args.timeout, include_fields=args.include_fields)
 
-    output = format_output(result, args.max_nodes, dedup=args.dedup, raw_symbols=args.raw_symbols)
+    output = format_output(
+        result,
+        args.max_nodes,
+        dedup=args.dedup,
+        raw_symbols=args.raw_symbols,
+        output_modules=args.output_modules,
+    )
     sys.stdout.write(output)
 
     # Graph JSON output (opt-in via --graph-output)
@@ -155,7 +165,13 @@ def _batch_extract(args: CLIArgs) -> int:
     for sym_key, file_uri, line in test_symbols:
         result = traverse(sym_key, symbol_table, sf, args.project_root, args.max_nodes, args.timeout, include_fields=args.include_fields)
         all_broken_links.extend(result.broken_links)
-        output = format_output(result, args.max_nodes, dedup=args.dedup, raw_symbols=args.raw_symbols)
+        output = format_output(
+            result,
+            args.max_nodes,
+            dedup=args.dedup,
+            raw_symbols=args.raw_symbols,
+            output_modules=args.output_modules,
+        )
         all_outputs.append(output)
 
         if args.graph_output:
@@ -225,6 +241,10 @@ def query_main(argv=None) -> int:
         help="Unified graph JSON path")
     parser.add_argument("--max-depth", type=int, default=10, metavar="N",
         help="Maximum traversal depth (default: 10)")
+    parser.add_argument("--with-source", action="store_true", default=False,
+        help="Attach source code snippets (switches output to Markdown)")
+    parser.add_argument("--project-root", default=None, metavar="PATH",
+        help="Project root for source file lookup (required with --with-source)")
 
     mode_group = parser.add_mutually_exclusive_group(required=True)
     mode_group.add_argument("--list-nodes", action="store_true",
@@ -238,6 +258,11 @@ def query_main(argv=None) -> int:
     mode_group.add_argument("--coverage", metavar="NODE_KEY",
         help="Q4: forward query filtered to impl nodes")
     args = parser.parse_args(argv)
+
+    if args.with_source and args.list_nodes:
+        parser.error("--with-source and --list-nodes are mutually exclusive")
+    if args.with_source and not args.project_root:
+        parser.error("--project-root is required when --with-source is enabled")
 
     from scip_deep_context.graph_merger import load_graph
     from scip_deep_context.graph_query import GraphQuery
@@ -269,15 +294,30 @@ def query_main(argv=None) -> int:
             print(f"  {m}", file=sys.stderr)
 
     if args.forward_from:
+        query_type = "forward_from"
         result = gq.forward_from(resolved_key, max_depth)
     elif args.reverse_from:
+        query_type = "reverse_from"
         result = gq.reverse_from(resolved_key, max_depth)
     elif args.test_impact:
+        query_type = "test_impact"
         result = gq.test_impact(resolved_key, max_depth)
     else:
+        query_type = "coverage"
         result = gq.coverage(resolved_key, max_depth)
 
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.with_source:
+        from scip_deep_context.output_formatter import format_query_markdown
+
+        md = format_query_markdown(
+            result,
+            query_type=query_type,
+            entry_node=resolved_key,
+            project_root=args.project_root,
+        )
+        sys.stdout.write(md)
+    else:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
     if result.get("is_truncated"):
         print(f"Warning: result truncated at max_depth={max_depth}", file=sys.stderr)
 

@@ -76,6 +76,7 @@ class TraversalResult:
     collected_nodes: int = 0
     edges: List[GraphEdge] = field(default_factory=list)
     node_metadata: dict = field(default_factory=dict)
+    pending_symbols: List[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -94,6 +95,7 @@ class CLIArgs:
     test_file_pattern: Optional[str] = None
     test_method_pattern: Optional[str] = None
     include_fields: bool = False     # --include-fields: include field symbols in BFS
+    output_modules: List[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -104,6 +106,7 @@ class OutputMetadata:
     is_truncated: bool
     truncation_reasons: List[str]
     alerts_count: int
+    rendered_nodes: Optional[int] = None
 
 
 # --- Exceptions ---

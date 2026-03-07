@@ -7,7 +7,7 @@ from typing import List, Optional
 from scip_deep_context.path_resolver import is_within_project
 
 
-def _parse_package(symbol: str) -> Optional[str]:
+def parse_package(symbol: str) -> Optional[str]:
     """Extract the package segment from a SCIP symbol.
 
     For 5+ part symbols: 3rd field. For 2-part symbols: 1st field.
@@ -19,6 +19,20 @@ def _parse_package(symbol: str) -> Optional[str]:
     if len(parts) == 2:
         return parts[0]
     return None
+
+
+def match_module_patterns(pkg: str, patterns: List[str]) -> bool:
+    """Check if a package name matches any given module patterns."""
+    for mod in patterns:
+        if not mod:
+            continue
+        if mod.endswith("*"):
+            prefix = mod[:-1]
+            if pkg.startswith(prefix):
+                return True
+        elif pkg == mod:
+            return True
+    return False
 
 
 class SymbolFilter:
@@ -35,22 +49,11 @@ class SymbolFilter:
     def is_internal(self, symbol: str, definition_uri: Optional[str] = None) -> bool:
         """Three-layer filter: whitelist → URI fallback → blacklist."""
         passed = False
-        pkg = _parse_package(symbol)
+        pkg = parse_package(symbol)
 
         if self._modules and pkg:
             # Layer 1: whitelist check
-            for mod in self._modules:
-                if not mod:
-                    continue
-                if mod.endswith("*"):
-                    prefix = mod[:-1]
-                    if pkg.startswith(prefix):
-                        passed = True
-                        break
-                else:
-                    if pkg == mod:
-                        passed = True
-                        break
+            passed = match_module_patterns(pkg, self._modules)
         else:
             # Layer 2: URI fallback
             if definition_uri is not None:

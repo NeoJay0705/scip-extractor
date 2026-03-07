@@ -28,8 +28,13 @@ description: >
 
 **Python：**
 ```bash
-npm install -g @sourcegraph/scip-python  # 首次安裝
-# 先啟動 virtualenv，再執行：
+# 檢查是否已安裝
+which scip-python || npm install -g @sourcegraph/scip-python
+
+# 啟動 virtualenv（必須，scip-python 需從 virtualenv 解析 import）
+source .venv/bin/activate
+
+# 建立索引
 scip-python index . --project-name=MY_PROJECT
 ```
 > 需要 Node v16+ 與 Python 3.10+。若遇 OOM，設定 `NODE_OPTIONS="--max-old-space-size=8192"`。
@@ -90,10 +95,27 @@ scip-extract \
 
 **檢查結果：**
 1. 讀取 Markdown frontmatter：
-   - `is_truncated: true` → 結果不完整，考慮增大 `max_nodes`
+   - `is_truncated: true` → 結果不完整（見下方處理策略）
    - `collected_nodes: 1` → BFS 未展開，檢查行號是否正確
-2. **驗證 Layer 0 的符號名稱**：確認 `## Layer 0` section 的 header 是預期的函式名（如 `main().`）。
+2. **讀 `## Summary` 區段**（frontmatter 之後、Layer 0 之前）：快速掌握整體結構——
+   - **Modules**：涉及的模組列表及各模組節點數
+   - **Layer Distribution**：各 Layer 的節點數分佈（如 `Layer 0: 1, Layer 1: 11, Layer 2: 24`）
+   - **Truncated Branches**（僅 `is_truncated: true` 時出現）：被截斷的 pending symbols 列表（最多 10 個），用於判斷哪些分支值得深入
+3. **驗證 Layer 0 的符號名稱**：確認 `## Layer 0` section 的 header 是預期的函式名（如 `main().`）。
    若出現 `local N` 或非預期的符號，表示進入點定位錯誤——將行號調整至 `def` 定義行重試。
+
+**`is_truncated: true` 處理策略：**
+- 若 `collected_nodes` ≤ 30 且 truncated：直接增大 `--max-nodes` 至 50-100
+- 若 `collected_nodes` > 50 且 truncated：context.md 已很大（數千行），**不建議直接增大 max-nodes**。
+  改用漸進式探索：查看 Summary 的 **Truncated Branches** 列表，以其中的關鍵函式為新進入點，分段擷取後用 `scip-graph-merge` 合併。
+
+**閱讀大型 context.md 的策略：**
+context.md 可能數千行（95 nodes ≈ 4800 行）。不要一次讀取整個檔案：
+1. **先讀 frontmatter**：確認 `collected_nodes`、`is_truncated` 狀態
+2. **讀 Summary 區段**：快速掌握模組分佈、Layer 結構、截斷分支（取代逐一 grep headers）
+3. **用 `--output-modules` 過濾輸出**：若只關注特定模組，重新擷取時加入 `--output-modules "target_module"` 僅輸出該模組的 Markdown（BFS 仍完整展開，不影響 Graph JSON）
+4. **用 graph-query 做結構化查詢**：`--forward-from` / `--reverse-from` 精準追蹤特定分支，加 `--with-source` 直接取得源碼
+5. **按需 view 特定節點**：根據 graph-query 結果只讀需要的函式代碼
 
 ### Step 3：查詢呼叫圖
 
@@ -125,6 +147,22 @@ scip-graph-query \
   --forward-from '*cli*/main().' \
   --max-depth 1
 ```
+
+**附帶源碼查詢（`--with-source`）：**
+
+預設 graph-query 輸出 JSON metadata（file、lines、layer），不含源碼。加上 `--with-source` 可直接取得 Markdown 格式的源碼上下文，省去逐一 `view` 每個檔案的步驟：
+
+```bash
+# 反向追蹤並附帶源碼（輸出 Markdown 而非 JSON）
+scip-graph-query \
+  --graph graph.json \
+  --reverse-from '*traverse().' \
+  --with-source --project-root .
+```
+
+> `--with-source` 會將輸出從 JSON 切換為 Markdown（含 YAML frontmatter + 各節點源碼）。
+> 必須搭配 `--project-root` 指定專案根目錄，用於定位源碼檔案。
+> 與 `--list-nodes` 互斥（list-nodes 只列出 key，不需要源碼）。
 
 ### Step 4（可選）：合併多個 Graph
 
@@ -159,6 +197,8 @@ scip-graph-query --graph unified.json --test-impact 'target().'
 | 改了 X，哪些測試 break | **scip-graph-query --test-impact** |
 | 測試覆蓋了什麼 | **scip-graph-query --coverage** |
 | 跨檔案完整上下文 | **scip-extract** |
+| 查詢結果同時要看源碼 | **scip-graph-query --with-source** |
+| 只看特定模組的上下文 | **scip-extract --output-modules** |
 | 搜尋字串 / config / log | grep |
 | 讀取已知路徑 | view |
 | 目錄結構 | glob |
@@ -168,23 +208,59 @@ scip-graph-query --graph unified.json --test-impact 'target().'
 
 | 問題 | 處理 |
 |------|------|
-| `index.scip` 不存在 | 依語言執行對應 indexer（Python: `npx @sourcegraph/scip-python index .`） |
-| exit code 1 | 擷取成功但有 broken links（引用到 SCIP 索引外的符號），結果可用但不完整 |
-| exit code 2 | SCIP 載入或進入點定位失敗，調整行號 |
-| exit code 3 | 路徑解析失敗（entry file 不存在或不在 project root 內） |
+| `index.scip` 不存在 | 依語言執行對應 indexer（見 Step 0） |
 | `collected_nodes: 1` | 行號未指向函式定義行，調整後重試 |
-| `is_truncated: true` | 增大 `--max-nodes` 或分段擷取 |
+| `is_truncated: true` | 查看 Summary 的 Truncated Branches，以關鍵分支為新進入點分段擷取；或增大 `--max-nodes` |
 | 合併報 IndexHashMismatchError | 重建索引後需重新擷取所有 graph |
+| context.md 太大、只需特定模組 | 加 `--output-modules "module_name"` 僅輸出該模組（BFS 不變） |
+
+### Exit Code 參考
+
+**scip-extract：**
+
+| Exit Code | 意義 |
+|-----------|------|
+| 0 | 成功 |
+| 1 | 擷取成功但有 broken links（引用到 SCIP 索引外的符號），結果可用但不完整 |
+| 2 | SCIP 載入或進入點定位失敗 |
+| 3 | 路徑解析失敗（entry file 不存在或不在 project root 內） |
+
+**scip-graph-merge：**
+
+| Exit Code | 意義 |
+|-----------|------|
+| 0 | 成功 |
+| 1 | IndexHashMismatchError（graph 基於不同版本的 index.scip） |
+| 2 | 其他錯誤（檔案讀取失敗等） |
+
+**scip-graph-query：**
+
+| Exit Code | 意義 |
+|-----------|------|
+| 0 | 成功 |
+| 2 | graph 載入失敗或 node key 無匹配 |
 
 ## 進階參數
 
+**scip-extract：**
+
 | 參數 | 說明 |
 |------|------|
+| `--output-modules` | 僅輸出指定模組的 Markdown（逗號分隔，BFS 仍完整展開）。模組名稱為 SCIP package name（如 `scip_deep_context`），非 Python import path |
 | `--include-fields` | BFS 包含 field/property symbols |
 | `--no-default-excludes` | 停用預設排除（含 local variable） |
 | `--exclude-patterns` | 自訂排除 pattern（逗號分隔） |
-| `--project-modules` | 限制 BFS 只追蹤指定模組 |
+| `--project-modules` | 限制 BFS 只追蹤指定模組（影響 BFS 邊界，與 `--output-modules` 不同） |
 | `--no-dedup` | 停用 containment dedup |
 | `--raw-symbols` | 顯示完整 SCIP symbol |
 | `--test-file-pattern` | 批次提取：匹配測試檔名（與 `--entry-file` 互斥） |
 | `--test-method-pattern` | 批次提取：匹配測試方法名 |
+
+> **`--project-modules` vs `--output-modules`**：前者控制 BFS 展開邊界（不追蹤模組外的呼叫），後者控制 Markdown 輸出過濾（BFS 完整展開但只渲染指定模組）。兩者可獨立或同時使用。
+
+**scip-graph-query：**
+
+| 參數 | 說明 |
+|------|------|
+| `--with-source` | 輸出從 JSON 切換為 Markdown，附帶各節點源碼（與 `--list-nodes` 互斥） |
+| `--project-root` | 專案根目錄，`--with-source` 時必須提供，用於定位源碼檔案 |
