@@ -63,13 +63,13 @@
 | `--scip-file` | string | ✅ | — | 必須為有效的 SCIP protobuf 檔案 |
 | `--project-root` | string | ✅ | — | 必須為存在的目錄路徑 |
 | `--entry-file` | string | ⚠️† | — | 與 `--entry-line` 搭配使用 |
-| `--entry-line` | integer | ⚠️† | — | 與 `--entry-file` 搭配使用 |
+| `--entry-line` | integer | ⚠️† | — | 與 `--entry-file` 搭配使用；行號可指向函式定義行（`def`/`func`/`function` 等）或函式 body 行（type annotation edge case 詳見 [USER_DOC.md 關鍵注意事項](./USER_DOC.md#關鍵注意事項)） |
 | `--test-file-pattern` | string | ⚠️‡ | — | glob pattern |
 | `--test-method-pattern` | string | ⚠️‡ | — | glob pattern |
 | `--max-nodes` | integer | | 10 | ≥ 1 |
 | `--timeout` | float | | 3.0 | > 0 |
 | `--exclude-patterns` | string | | `""` | 逗號分隔；預設排除 `local *` |
-| `--no-default-excludes` | flag | | false | 停用 `local *` 預設排除 |
+| `--no-default-excludes` | flag | | false | 停用 `local *` BFS 預設排除（不影響進入點選擇，進入點始終排除 `local *`） |
 | `--project-modules` | string | | `""` | 逗號分隔（不支援空格分隔多值） |
 | `--no-dedup` | flag | | false | 停用 containment dedup（同時影響 Markdown 和 Graph JSON） |
 | `--raw-symbols` | flag | | false | section header 顯示完整 SCIP symbol |
@@ -87,9 +87,9 @@
 
 | Code | 含義 | 說明 | 關聯情境 |
 |------|------|------|---------|
-| 0 | 成功 | 無 broken links | 情境 1, 2, 8-12 |
-| 1 | 部分成功 | 有 broken links，仍產出結果 | 情境 1 |
-| 2 | 失敗 | SCIP 載入或進入點定位失敗 | 情境 1 |
+| 0 | 成功 | 無 broken links | 情境 1, 2, 8-13 |
+| 1 | 部分成功 | 有 broken links，仍產出結果 | 情境 1, 9 |
+| 2 | 失敗 | SCIP 載入或進入點定位失敗（含 local-only 行特化錯誤、批次模式無匹配測試 symbol） | 情境 1, 9, 10 |
 | 3 | 失敗 | 檔案路徑解析失敗 | 情境 1 |
 
 ### 3.2 scip-graph-merge
@@ -283,7 +283,7 @@
 
 | Skill | CLI 指令 | 輸出格式 | 關聯情境 |
 |-------|---------|---------|---------|
-| `scip-extract` | `scip-extract` | Markdown (stdout) + JSON (file) | 情境 1, 2, 8-12 |
+| `scip-extract` | `scip-extract` | Markdown (stdout) + JSON (file) | 情境 1, 2, 8-13 |
 | `scip-graph-query` | `scip-graph-query` | JSON (stdout) | 情境 4-7 |
 | `scip-graph-merge` | `scip-graph-merge` | JSON (file) | 情境 3, 8 |
 
@@ -323,7 +323,7 @@
 | 7 | 測試覆蓋分析（Coverage） | scip-graph-query | §3.3, §4.3 |
 | 8 | 端到端工作流程 | 全部三個 | §3.1-3.3 |
 | 9 | 批次測試提取 | scip-extract | §3.1 |
-| 10 | 過濾控制 — Local Variable 與 Field Symbols | scip-extract | §3.1 |
+| 10 | 過濾控制 — Local Variable 與 Field Symbols | scip-extract | §3.1, §八 |
 | 11 | Dedup 控制與 Raw Symbols | scip-extract | §3.1 |
 | 12 | 多模組 Symbol 過濾 | scip-extract | §3.1 |
 | 13 | 分層探索 — 迭代式深層上下文提取 | scip-extract, scip-graph-merge | §3.1, §3.2, §4.1, §4.2 |
@@ -367,3 +367,38 @@ descriptor `method().`，導致 parameter symbol 被誤判為 function-like 並�
 - `format_graph_json().` → True → 進入 BFS ✓
 - `format_graph_json().(entry_file)` → False → 排除 ✓
 - `format_graph_json().(entry_line)` → False → 排除 ✓
+
+---
+
+## 八、Local Symbol 進入點過濾機制說明
+
+### 8.1 問題機制
+
+SCIP index 中，local variable 的 symbol 以 `local ` 開頭（如 `local 16`），出現在函式 body
+行的變數賦值位置。在 v0.4.x 及之前版本中，`locate_entry_symbol()` 未過濾 local symbols，
+當使用者以 `--entry-line` 指向含 local variable 賦值的 body 行時，`local N` 可能因
+leftmost character 選擇而被優先選為 entry symbol，導致 BFS 展開異常。
+
+### 8.2 修復策略
+
+在 `locate_entry_symbol()` 的候選收集迴圈中，local symbols 被前置過濾（`is_local_symbol()`
+共用函式，定義於 `symbol_filter.py`）。此過濾獨立於 `--no-default-excludes`（後者僅控制
+BFS `SymbolFilter`），確保進入點定位始終排除 local symbols。
+
+### 8.3 行為對照
+
+| 情境 | 修改前行為 | 修改後行為 |
+|------|----------|----------|
+| body 行含 `local N` + function reference | `local N` 可能被選為 entry（因 leftmost） | `local N` 被排除，function reference 被選取 |
+| body 行僅含 `local N`（無 function reference） | `local N` 被選為 entry → BFS 異常 | 產出特化錯誤 `Only local symbols found`，exit code 2 |
+| `--no-default-excludes` + 上述兩情境 | 同上 | 同上（entry point 過濾不受影響） |
+| def 行（`def foo():` 等） | 正常選取 function definition | 行為不變 |
+
+### 8.4 與 `--no-default-excludes` 的語義切分
+
+| 機制 | 控制對象 | 受 `--no-default-excludes` 影響 |
+|------|---------|:----:|
+| Entry point 過濾 | `locate_entry_symbol()` 中的 `is_local_symbol()` 前置檢查 | ✗ |
+| BFS 過濾 | `SymbolFilter` 的 `--exclude-patterns "local *"` 預設規則 | ✓ |
+
+**原因**：Entry point 定位與 BFS 過濾的語義不同——entry point 需要一個可展開的 function-like symbol 作為 BFS 起點，local variable 無法作為有意義的起點（無呼叫關係可追蹤）。即使 BFS 允許 local symbols 通過（`--no-default-excludes`），entry point 仍應排除它們。關聯情境：情境 1（entry point 定位）、情境 10（過濾控制語義獨立性驗證）。

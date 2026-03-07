@@ -150,9 +150,11 @@ def _batch_extract(args: CLIArgs) -> int:
     sf = SymbolFilter(args.project_modules, args.project_root, args.exclude_patterns)
     all_graphs = []
     all_outputs = []
+    all_broken_links = []
 
     for sym_key, file_uri, line in test_symbols:
         result = traverse(sym_key, symbol_table, sf, args.project_root, args.max_nodes, args.timeout, include_fields=args.include_fields)
+        all_broken_links.extend(result.broken_links)
         output = format_output(result, args.max_nodes, dedup=args.dedup, raw_symbols=args.raw_symbols)
         all_outputs.append(output)
 
@@ -183,7 +185,7 @@ def _batch_extract(args: CLIArgs) -> int:
         with open(args.graph_output, "w", encoding="utf-8") as f:
             json.dump(merged, f, indent=2, ensure_ascii=False)
 
-    return 0
+    return 1 if all_broken_links else 0
 
 
 def merge_main(argv=None) -> int:

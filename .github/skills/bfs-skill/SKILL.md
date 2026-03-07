@@ -14,13 +14,44 @@ description: >
 ## 前提條件
 
 - 專案根目錄存在 `index.scip`（SCIP 靜態分析索引）
-- 已安裝 `scip-extract`、`scip-graph-merge`、`scip-graph-query` CLI 工具（透過 `pipx install ./scip-deep-context` 安裝）
+- 已安裝 `scip-extract`、`scip-graph-merge`、`scip-graph-query` CLI 工具（透過 `pip install -e .` 或 `pipx install .` 於專案根目錄安裝）
 
 若 `index.scip` 不存在或 CLI 不可用，fallback 至 grep/view。
 
 ---
 
 ## 核心流程
+
+### Step 0：建立 SCIP 索引
+
+不論 `index.scip` 是否已存在，每次代碼變更後應重新建索引以確保分析結果與當前代碼一致。
+
+**Python：**
+```bash
+npm install -g @sourcegraph/scip-python  # 首次安裝
+# 先啟動 virtualenv，再執行：
+scip-python index . --project-name=MY_PROJECT
+```
+> 需要 Node v16+ 與 Python 3.10+。若遇 OOM，設定 `NODE_OPTIONS="--max-old-space-size=8192"`。
+
+**Go：**
+```bash
+go install github.com/sourcegraph/scip-go/cmd/scip-go@latest  # 首次安裝
+# 在專案根目錄（含 go.mod）執行：
+scip-go
+```
+
+**TypeScript / JavaScript：**
+```bash
+npm install -g @sourcegraph/scip-typescript  # 首次安裝
+npm install  # 確保 node_modules 存在
+# TypeScript（需 tsconfig.json）：
+scip-typescript index
+# JavaScript（無 tsconfig.json）：
+scip-typescript index --infer-tsconfig
+```
+
+> 所有 indexer 預設輸出 `index.scip` 至當前目錄。
 
 ### Step 1：定位進入點
 
@@ -138,7 +169,9 @@ scip-graph-query --graph unified.json --test-impact 'target().'
 | 問題 | 處理 |
 |------|------|
 | `index.scip` 不存在 | 依語言執行對應 indexer（Python: `npx @sourcegraph/scip-python index .`） |
+| exit code 1 | 擷取成功但有 broken links（引用到 SCIP 索引外的符號），結果可用但不完整 |
 | exit code 2 | SCIP 載入或進入點定位失敗，調整行號 |
+| exit code 3 | 路徑解析失敗（entry file 不存在或不在 project root 內） |
 | `collected_nodes: 1` | 行號未指向函式定義行，調整後重試 |
 | `is_truncated: true` | 增大 `--max-nodes` 或分段擷取 |
 | 合併報 IndexHashMismatchError | 重建索引後需重新擷取所有 graph |
