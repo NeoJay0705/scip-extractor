@@ -1,10 +1,6 @@
 ---
 name: bfs-skill
-description: >
-  代碼檢查/追蹤. Use this when asked to explore code, trace call chains, find callers or callees,
-  analyze impact of changes, check test coverage, find references, track dependencies,
-  understand how a function works, follow code flow, identify usage patterns,
-  or navigate cross-file relationships.
+description: 代碼檢查/追蹤. Use this when asked to explore code, trace call chains, find callers or callees, analyze impact of changes, check test coverage, find references, track dependencies, understand how a function works, follow code flow, identify usage patterns, or navigate cross-file relationships.
 ---
 
 # BFS Code Tracing Skill
