@@ -1,25 +1,48 @@
 ---
 name: bfs-skill
-description: 代碼檢查/追蹤. Use this when asked to explore code, trace call chains, find callers or callees, analyze impact of changes, check test coverage, find references, track dependencies, understand how a function works, follow code flow, identify usage patterns, or navigate cross-file relationships.
+description: >
+  基於 SCIP 靜態分析索引的語意級代碼探索與追蹤。
+  當用戶需要追蹤呼叫鏈（「A 呼叫了什麼」「誰呼叫了 B」）、
+  分析修改影響（「改了 X 哪些測試會 break」）、
+  檢查測試覆蓋（「這個測試覆蓋了哪些 production code」）、
+  取得跨檔案完整代碼上下文以理解模組架構或指導 subagent 時使用。
+  即使用戶只是說「幫我看看這個函式」或「這個改動影響什麼」或「幫我做 code review」，
+  只要涉及跨檔案的代碼追蹤或語意分析，都應該使用此 skill 而非 grep/view。
+  前提：專案根目錄需存在 index.scip 且 SCIP CLI 工具可用。
 ---
 
 # BFS Code Tracing Skill
 
-基於 SCIP 靜態分析索引的語意級代碼探索與追蹤。當需要理解代碼結構、追蹤呼叫關係、分析修改影響範圍時，使用此 skill 取代逐層 grep/view 的低效循環。
+基於 SCIP 靜態分析索引的語意級代碼探索與追蹤。與 grep/view 的逐層搜尋不同，此 Skill 能一次呼叫就取得完整的跨檔案呼叫圖，精確識別語意上的呼叫關係（不只是文字匹配），並支援影響分析和測試覆蓋查詢——這些都是 grep/view 做不到的。
 
 ## 前提條件
 
-- 已安裝對應語言的 SCIP indexer（見 Step 0），每次使用前先重建 `index.scip` 以確保與當前代碼一致
+- 已安裝對應語言的 SCIP indexer，每次使用前先重建 `index.scip` 以確保與當前代碼一致（各語言安裝指引見 `references/indexer-setup.md`）
 - 已安裝 `scip-extract`、`scip-graph-merge`、`scip-graph-query` CLI 工具：
   ```bash
-  # 檢查是否已安裝
   which scip-extract || {
     git clone git@github.com:NeoJay0705/scip-extractor.git /tmp/scip-extractor
     pip install -e /tmp/scip-extractor
   }
   ```
 
-若上述工具未安裝，**請先要求使用者安裝**後再繼續，不要 fallback 至 grep/view。
+若上述工具未安裝，請先要求使用者安裝後再繼續，不要 fallback 至 grep/view——因為 grep 只能做文字匹配，無法提供語意正確的呼叫關係。
+
+---
+
+## 場景範例
+
+以下是常見的用戶需求及對應的操作方式，幫助判斷何時及如何使用此 Skill：
+
+| 用戶說的話 | 該怎麼做 |
+|-----------|---------|
+| 「幫我看看這個函式被哪些地方呼叫」 | Step 1 定位 → Step 2 擷取 → Step 3 `--reverse-from` |
+| 「我改了 handler，哪些測試會受影響？」 | Step 2 擷取（含測試） → Step 3 `--test-impact` |
+| 「這個測試覆蓋了哪些 production code？」 | Step 2 從測試函式擷取 → Step 3 `--coverage` |
+| 「幫我理解 auth 模組的架構」 | Step 1 找模組入口 → Step 2 `--max-nodes 50` 概覽 |
+| 「我想重構 check_rate，幫我看影響範圍」 | Step 3 `--reverse-from` 找呼叫者 + `--test-impact` 找受影響測試 |
+| 「幫我做 code review，看改動影響」 | Step 2 擷取改動函式 → Step 3 `--reverse-from` + `--test-impact` |
+| 「這段代碼的上下游關係是什麼？」 | Step 2 擷取 → Step 3 `--forward-from` + `--reverse-from` |
 
 ---
 
@@ -27,43 +50,7 @@ description: 代碼檢查/追蹤. Use this when asked to explore code, trace cal
 
 ### Step 0：建立 SCIP 索引
 
-不論 `index.scip` 是否已存在，每次代碼變更後應重新建索引以確保分析結果與當前代碼一致。
-
-**Python：**
-```bash
-# 檢查是否已安裝，未安裝則安裝
-which scip-python || npm install -g @sourcegraph/scip-python
-
-# 啟動 virtualenv（必須，scip-python 需從 virtualenv 解析 import）
-source .venv/bin/activate
-
-# 建立索引（--project-name 會成為 SCIP package name，影響 --output-modules 與 --project-modules 的匹配粒度）
-scip-python index . --project-name=MY_PROJECT
-```
-> 需要 Node v16+ 與 Python 3.10+。若遇 OOM，設定 `NODE_OPTIONS="--max-old-space-size=8192"`。
-
-**Go：**
-```bash
-# 檢查是否已安裝，未安裝則安裝
-which scip-go || go install github.com/sourcegraph/scip-go/cmd/scip-go@latest
-
-# 在專案根目錄（含 go.mod）執行：
-scip-go
-```
-
-**TypeScript / JavaScript：**
-```bash
-# 檢查是否已安裝，未安裝則安裝
-which scip-typescript || npm install -g @sourcegraph/scip-typescript
-
-npm install  # 確保 node_modules 存在
-# TypeScript（需 tsconfig.json）：
-scip-typescript index
-# JavaScript（無 tsconfig.json）：
-scip-typescript index --infer-tsconfig
-```
-
-> 所有 indexer 預設輸出 `index.scip` 至當前目錄。
+每次代碼變更後重新建索引，確保分析結果與當前代碼一致。各語言的 indexer 安裝和使用指引見 `references/indexer-setup.md`。
 
 ### Step 1：定位進入點
 
@@ -235,52 +222,18 @@ scip-graph-query --graph unified.json --test-impact 'target().'
 
 ### Exit Code 參考
 
-**scip-extract：**
-
-| Exit Code | 意義 |
-|-----------|------|
-| 0 | 成功 |
-| 1 | 擷取成功但有 broken links（引用到 SCIP 索引外的符號），結果可用但不完整 |
-| 2 | SCIP 載入或進入點定位失敗 |
-| 3 | 路徑解析失敗（entry file 不存在或不在 project root 內） |
-
-**scip-graph-merge：**
-
-| Exit Code | 意義 |
-|-----------|------|
-| 0 | 成功 |
-| 1 | IndexHashMismatchError（graph 基於不同版本的 index.scip） |
-| 2 | 其他錯誤（檔案讀取失敗等） |
-
-**scip-graph-query：**
-
-| Exit Code | 意義 |
-|-----------|------|
-| 0 | 成功 |
-| 2 | graph 載入失敗或 node key 無匹配 |
+詳見 `references/exit-codes.md`。常見的非零 exit code：
+- **scip-extract exit 1**：有 broken links，結果可用但不完整
+- **scip-extract exit 2**：SCIP 載入或進入點定位失敗
+- **scip-graph-merge exit 1**：graph 基於不同版本的 index.scip
 
 ## 進階參數
 
-**scip-extract：**
+完整的進階參數文件見 `references/advanced-params.md`。以下為最常用的幾個：
 
-| 參數 | 說明 |
-|------|------|
-| `--output-modules` | 僅輸出指定 SCIP package 的 Markdown（逗號分隔，BFS 仍完整展開）。模組名稱為 SCIP package name（如 `scip_deep_context`），非 Python import path。⚠️ 對單一 SCIP package 專案無法做子模組過濾，改用 `--output-symbol-prefix` |
-| `--output-symbol-prefix` | 僅輸出 descriptor 以指定前綴開頭的節點 Markdown（逗號分隔，BFS 仍完整展開）。前綴為 SCIP descriptor 的 module path（以 `/` 分隔），case-sensitive。適用於單一 SCIP package 專案的子模組過濾。可用 `--raw-symbols` 查看完整 descriptor 確認前綴格式 |
-| `--include-fields` | BFS 包含 field/property symbols |
-| `--no-default-excludes` | 停用預設排除（含 local variable） |
-| `--exclude-patterns` | 自訂排除 pattern（逗號分隔） |
-| `--project-modules` | 限制 BFS 只追蹤指定模組（影響 BFS 邊界，與 `--output-modules` 不同） |
-| `--no-dedup` | 停用 containment dedup |
-| `--raw-symbols` | 顯示完整 SCIP symbol |
-| `--test-file-pattern` | 批次提取：匹配測試檔名（與 `--entry-file` 互斥） |
-| `--test-method-pattern` | 批次提取：匹配測試方法名 |
+- **`--output-symbol-prefix "submodule"`**：僅輸出指定 descriptor 前綴的節點（單 SCIP package 專案的子模組過濾）
+- **`--output-modules "module_name"`**：僅輸出指定 SCIP package 的 Markdown（多 package 專案適用）
+- **`--include-fields`**：BFS 包含 field/property symbols
+- **`--with-source --project-root .`**：graph-query 輸出 Markdown 附帶源碼（取代逐一 view）
 
-> **`--project-modules` vs `--output-modules` vs `--output-symbol-prefix`**：`--project-modules` 控制 BFS 展開邊界（不追蹤模組外的呼叫）；`--output-modules` 控制 Markdown 輸出的 SCIP package 過濾（BFS 完整展開但只渲染指定 package）；`--output-symbol-prefix` 控制 Markdown 輸出的 descriptor prefix 過濾（適用於單 SCIP package 專案的子模組過濾）。三者可獨立或組合使用，`--output-modules` 和 `--output-symbol-prefix` 同時啟用時為 AND 關係。
-
-**scip-graph-query：**
-
-| 參數 | 說明 |
-|------|------|
-| `--with-source` | 輸出從 JSON 切換為 Markdown，附帶各節點源碼（與 `--list-nodes` 互斥） |
-| `--project-root` | 專案根目錄，`--with-source` 時必須提供，用於定位源碼檔案 |
+> **`--project-modules` vs `--output-modules` vs `--output-symbol-prefix`**：`--project-modules` 控制 BFS 展開邊界；`--output-modules` 控制輸出的 SCIP package 過濾；`--output-symbol-prefix` 控制輸出的 descriptor prefix 過濾。三者可獨立或組合使用。
