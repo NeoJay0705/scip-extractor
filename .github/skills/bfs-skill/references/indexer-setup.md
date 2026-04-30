@@ -2,6 +2,17 @@
 
 不論 `index.scip` 是否已存在，每次代碼變更後應重新建索引以確保分析結果與當前代碼一致。
 
+## scip-extractor 本體 CLI 安裝
+
+```bash
+which scip-extract scip-graph-merge scip-graph-query || {
+  git clone https://github.com/NeoJay0705/scip-extractor.git
+  pip install -e ./scip-extractor
+}
+```
+
+> 若已 clone 過，直接 `pip install -e <path>` 即可。CLI 提供 `scip-extract`、`scip-graph-merge`、`scip-graph-query` 三個入口。
+
 ## Python
 
 ```bash
